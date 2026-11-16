@@ -132,9 +132,13 @@ Aurolo picks the readings up automatically.
   ```powershell
   winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
   ```
-  If winget says Build Tools is already installed, add the C++ part to the existing install instead:
+  If winget says Build Tools is already installed, add the C++ part to the existing install instead. In **PowerShell**:
   ```powershell
   & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe" modify --installPath "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools" --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive
+  ```
+  or in **Command Prompt**:
+  ```bat
+  "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\setup.exe" modify --installPath "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools" --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive
   ```
   Or open **Visual Studio Installer**, click **Modify** on Build Tools, and tick **Desktop development with C++**. Then open a new terminal and run `cargo build --release` again.
 - **A shortcut doesn't work:** another app is probably using it, which is common with other notch or island apps. Close that app (Aurolo grabs the key within a few seconds), or change the shortcut in `config.toml`.
