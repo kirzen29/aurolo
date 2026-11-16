@@ -128,6 +128,15 @@ Aurolo picks the readings up automatically.
 ---
 
 ## Troubleshooting
+- **Build fails with `linker 'link.exe' not found`:** the Microsoft C++ Build Tools are missing, or installed without the C++ part. VS Code isn't enough. Install them:
+  ```powershell
+  winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+  ```
+  If winget says Build Tools is already installed, add the C++ part to the existing install instead:
+  ```powershell
+  & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe" modify --installPath "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools" --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive
+  ```
+  Or open **Visual Studio Installer**, click **Modify** on Build Tools, and tick **Desktop development with C++**. Then open a new terminal and run `cargo build --release` again.
 - **A shortcut doesn't work:** another app is probably using it, which is common with other notch or island apps. Close that app (Aurolo grabs the key within a few seconds), or change the shortcut in `config.toml`.
 - **No unread counts on social tiles:** Windows may not grant notification access to unpackaged apps. The tiles still open your messages.
 - **Lyrics are slightly early or late:** use `[` / `]` in fullscreen, or tray → *Lyrics sync*.
