@@ -873,6 +873,13 @@ impl App {
             );
             let scene = std::mem::take(&mut f.scene);
             w.painter.render(gpu, &scene, t);
+            if dk.dismiss_req {
+                dk.dismiss_req = false;
+                // let the dock take focus for a moment so Windows closes its panel
+                w.set_overlay(false);
+                platform_shell::dismiss_shell_panel(w.hwnd, dk.last_app());
+                w.set_overlay(true);
+            }
             let over = w.input.mouse.map(|p| dk.hits.iter().any(|r| crate::ui::hit(*r, p))).unwrap_or(false);
             w.set_through(!over);
             w.input.end_frame();

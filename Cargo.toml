@@ -1,6 +1,6 @@
 [package]
 name = "aurolo"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "Dynamic Island, synced lyrics and ambient edge glow for Windows"
 
@@ -32,6 +32,7 @@ features = [
   "Storage_Streams",
   "Networking_Connectivity",
   "Devices_Enumeration",
+  "Devices_Radios",
   "UI_Notifications",
   "UI_Notifications_Management",
   "ApplicationModel",

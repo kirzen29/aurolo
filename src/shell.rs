@@ -144,35 +144,12 @@ pub fn minimize_window(h: isize) {
     }
 }
 
-/// Is a Windows shell panel (quick settings, notification center, Start, search…) in
-/// the foreground? `apps` are the normal app windows, which never count.
-pub fn shell_panel_open(apps: &[TaskWin]) -> bool {
+/// Close an open shell panel (quick settings, notifications, Start…). They close when
+/// focus moves, so `own` (one of our windows, allowed to activate) takes focus for a
+/// moment and then hands it back to `app` (or the desktop).
+pub fn dismiss_shell_panel(own: HWND, app: isize) {
     unsafe {
-        let fg = GetForegroundWindow();
-        if fg.0.is_null() || apps.iter().any(|w| w.hwnd == fg.0 as isize) {
-            return false;
-        }
-        let mut cls = [0u16; 64];
-        let n = GetClassNameW(fg, &mut cls);
-        let class = String::from_utf16_lossy(&cls[..n.max(0) as usize]);
-        if matches!(class.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") {
-            return false;
-        }
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(fg, Some(&mut pid));
-        let exe = exe_of_pid(pid);
-        let stem = exe.rsplit('\\').next().unwrap_or("");
-        matches!(
-            stem,
-            "explorer.exe" | "shellexperiencehost.exe" | "shellhost.exe" | "startmenuexperiencehost.exe" | "searchhost.exe"
-        )
-    }
-}
-
-/// Close an open shell panel the way the taskbar does: give focus back to an app (or the
-/// desktop), and the panel dismisses itself.
-pub fn dismiss_shell_panel(app: isize) {
-    unsafe {
+        let _ = SetForegroundWindow(own);
         let target = if app != 0 && IsWindow(Some(HWND(app as *mut _))).as_bool() {
             HWND(app as *mut _)
         } else {

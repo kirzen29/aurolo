@@ -305,6 +305,98 @@ pub fn set_windows_taskbar_visible(visible: bool) {
     }
 }
 
+// ------------------------------------------------------------- control center
+
+/// Wi-Fi / Bluetooth radio switches, read and set on a background thread
+/// (the WinRT calls block).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Radios {
+    /// None = this PC has no such radio (or access was denied).
+    pub wifi: Option<bool>,
+    pub bluetooth: Option<bool>,
+}
+
+pub enum RadioCmd {
+    Set { wifi: bool, on: bool },
+}
+
+pub fn spawn_radios() -> (std::sync::Arc<parking_lot::Mutex<Radios>>, std::sync::mpsc::Sender<RadioCmd>) {
+    use windows::Devices::Radios::{Radio, RadioKind, RadioState};
+    let state = std::sync::Arc::new(parking_lot::Mutex::new(Radios::default()));
+    let (tx, rx) = std::sync::mpsc::channel::<RadioCmd>();
+    let st = state.clone();
+    let _ = std::thread::Builder::new().name("radios".into()).spawn(move || {
+        com_init();
+        let _ = Radio::RequestAccessAsync().and_then(|op| op.join());
+        loop {
+            let radios: Vec<Radio> = Radio::GetRadiosAsync()
+                .and_then(|op| op.join())
+                .map(|list| list.into_iter().collect())
+                .unwrap_or_default();
+            let find = |k: RadioKind| radios.iter().find(|r| r.Kind().map(|x| x == k).unwrap_or(false)).cloned();
+            let (wifi, bt) = (find(RadioKind::WiFi), find(RadioKind::Bluetooth));
+            let on = |r: &Option<Radio>| r.as_ref().and_then(|r| r.State().ok()).map(|s| s == RadioState::On);
+            *st.lock() = Radios { wifi: on(&wifi), bluetooth: on(&bt) };
+            // wait for a command (or re-read every 2 s)
+            match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                Ok(RadioCmd::Set { wifi: w, on: v }) => {
+                    let target = if w { &wifi } else { &bt };
+                    if let Some(r) = target {
+                        let _ = r.SetStateAsync(if v { RadioState::On } else { RadioState::Off }).and_then(|op| op.join());
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(_) => break,
+            }
+        }
+    });
+    (state, tx)
+}
+
+/// Set master volume (0..1).
+pub fn set_volume(v: f32) {
+    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+    use windows::Win32::Media::Audio::*;
+    com_init();
+    unsafe {
+        let Ok(en) = CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) else { return };
+        let Ok(dev) = en.GetDefaultAudioEndpoint(eRender, eConsole) else { return };
+        let Ok(vol) = dev.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None) else { return };
+        let _ = vol.SetMasterVolumeLevelScalar(v.clamp(0.0, 1.0), std::ptr::null());
+        if v > 0.0 {
+            let _ = vol.SetMute(false, std::ptr::null());
+        }
+    }
+}
+
+pub fn toggle_mute() {
+    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+    use windows::Win32::Media::Audio::*;
+    com_init();
+    unsafe {
+        let Ok(en) = CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) else { return };
+        let Ok(dev) = en.GetDefaultAudioEndpoint(eRender, eConsole) else { return };
+        let Ok(vol) = dev.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None) else { return };
+        let m = vol.GetMute().map(|b| b.as_bool()).unwrap_or(false);
+        let _ = vol.SetMute(!m, std::ptr::null());
+    }
+}
+
+/// Set laptop screen brightness (0..1) in the background.
+pub fn set_brightness(v: f32) {
+    use std::os::windows::process::CommandExt;
+    let pct = (v.clamp(0.0, 1.0) * 100.0).round() as u32;
+    let _ = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!("(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods | Select-Object -First 1 | Invoke-CimMethod -MethodName WmiSetBrightness -Arguments @{{Timeout=1;Brightness={pct}}}) | Out-Null"),
+        ])
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .spawn();
+}
+
 /// Open the Start menu (asks the taskbar, no simulated key presses).
 pub fn open_start() {
     unsafe {

@@ -93,6 +93,15 @@ pub struct Dock {
     walls: Vec<PathBuf>,
     walls_checked: Option<Instant>,
     dial_open: bool,
+    // control center (our own quick settings: opens and closes reliably)
+    cc_open: bool,
+    cc_a: f32,
+    radios: Arc<parking_lot::Mutex<desktop::Radios>>,
+    radio_tx: Sender<desktop::RadioCmd>,
+    /// Slider being dragged: 1 = volume, 2 = brightness; with its live value.
+    cc_drag: Option<(u8, f32)>,
+    /// Brightness shown right after a change (Windows reports it back with a delay).
+    cc_bri: Option<(f32, Instant)>,
     dial_a: f32,
     dial_x: f32,
     dial_pos: f32,
@@ -103,8 +112,10 @@ pub struct Dock {
     thumb_req: Sender<PathBuf>,
     thumb_rx: Receiver<(PathBuf, Option<Px>)>,
     thumb_pending: HashSet<PathBuf>,
-    /// Windows panel the dock last opened (quick settings, notifications, Start, Task View).
+    /// Windows panel the dock opened and that is (probably) still up.
     panel: Option<u8>,
+    /// Set when a second click asks to close that panel; the app does the focus dance.
+    pub dismiss_req: bool,
     /// Demo screenshots: open the right-click menu of the focused app once.
     debug_menu: bool,
     pub hits: Vec<[f32; 4]>,
@@ -166,6 +177,7 @@ fn spawn_thumb_loader() -> (Sender<PathBuf>, Receiver<(PathBuf, Option<Px>)>) {
 impl Dock {
     pub fn new() -> Self {
         let (thumb_req, thumb_rx) = spawn_thumb_loader();
+        let (radios, radio_tx) = desktop::spawn_radios();
         Dock {
             wins: vec![],
             last_scan: None,
@@ -184,6 +196,12 @@ impl Dock {
             walls: vec![],
             walls_checked: None,
             dial_open: crate::demo::is_demo() && std::env::var("AUROLO_DEMO_DOCK_DIAL").is_ok(),
+            cc_open: crate::demo::is_demo() && std::env::var("AUROLO_DEMO_DOCK_CC").is_ok(),
+            cc_a: 0.0,
+            radios,
+            radio_tx,
+            cc_drag: None,
+            cc_bri: None,
             dial_a: 0.0,
             dial_x: 0.0,
             dial_pos: 0.0,
@@ -197,13 +215,14 @@ impl Dock {
             hits: vec![],
             busy: false,
             panel: None,
+            dismiss_req: false,
             debug_menu: crate::demo::is_demo() && std::env::var("AUROLO_DEMO_DOCK_MENU").is_ok(),
         }
     }
 
     /// True while a menu or the wallpaper dial is open (the app keeps the dock responsive).
     pub fn popup_open(&self) -> bool {
-        self.menu.is_some() || self.dial_open
+        self.menu.is_some() || self.dial_open || self.cc_open
     }
 
     fn scan(&mut self, force: bool) {
@@ -300,12 +319,39 @@ impl Dock {
     /// Open a Windows panel, or close it if it's the one we opened and it's still up
     /// (a second click toggles, like the Windows taskbar).
     fn toggle_panel(&mut self, id: u8, open: impl FnOnce()) {
-        if self.panel == Some(id) && shell::shell_panel_open(&self.wins) {
-            shell::dismiss_shell_panel(self.fg);
+        if self.panel == Some(id) {
             self.panel = None;
+            self.dismiss_req = true;
         } else {
             open();
             self.panel = Some(id);
+        }
+    }
+
+    /// Last app window the user worked in (focus goes back there when a panel closes).
+    pub fn last_app(&self) -> isize {
+        self.fg
+    }
+
+    /// A press outside the dock usually closes the open Windows panel too, unless it
+    /// lands on the panel itself (rough screen area per panel).
+    fn track_outside_press(&mut self, input: &Input) {
+        let Some(id) = self.panel else { return };
+        if !(input.pressed && input.mouse.is_none()) {
+            return;
+        }
+        let (cx, cy) = platform::cursor_pos();
+        let (mon, _) = shell::monitor_rects(cx, cy);
+        let w = (mon.right - mon.left).max(1) as f32;
+        let fx = (cx - mon.left) as f32 / w;
+        let on_panel = match id {
+            2 => fx > 0.70,                    // notifications: right side
+            3 => (0.25..0.75).contains(&fx),   // Start: centre
+            _ => false,
+        };
+        let _ = cy;
+        if !on_panel {
+            self.panel = None;
         }
     }
 
@@ -381,6 +427,7 @@ impl Dock {
         wall_dir: &str,
     ) -> DockAction {
         self.scan(false);
+        self.track_outside_press(input);
         self.refresh_walls(wall_dir);
         self.hits.clear();
         self.busy = false;
@@ -468,7 +515,9 @@ impl Dock {
                 tip = Some((t, rx + status_w / 2.0));
             }
             if input.clicked(r) {
-                self.toggle_panel(1, || platform::open("ms-actioncenter:controlcenter/"));
+                self.cc_open = !self.cc_open;
+                self.menu = None;
+                self.dial_open = false;
             }
             rx += status_w;
         }
@@ -617,6 +666,7 @@ impl Dock {
                 self.dial_x = wcx;
             }
             if input.clicked(r) {
+                self.cc_open = false;
                 self.dial_open = !self.dial_open;
                 self.dial_x = wcx;
                 self.menu = None;
@@ -887,15 +937,29 @@ impl Dock {
             }
         }
 
+        // ================= control center =================
+        self.cc_a = approach(self.cc_a, if self.cc_open { 1.0 } else { 0.0 }, 16.0, f.dt);
+        if self.cc_a > 0.01 {
+            if self.cc_a < 0.99 {
+                self.busy = true;
+            }
+            let rect = self.draw_cc(f, input, shared, &pal, right[0] + right[2]);
+            popup_rects.push(rect);
+        }
+
         // close popups on a press elsewhere or Esc
         if input.key(Key::Esc) {
             self.menu = None;
             self.dial_open = false;
+            self.cc_open = false;
         } else if input.pressed && !popup_rects.iter().any(|r| input.over(*r)) {
             self.menu = None;
-            // the dial button itself toggles the dial on release
+            // the buttons that open the dial / control center toggle them on release
             if !input.over(left) {
                 self.dial_open = false;
+            }
+            if !input.over(right) {
+                self.cc_open = false;
             }
         }
         self.hits.extend(popup_rects.iter().copied());
@@ -1026,6 +1090,209 @@ impl Dock {
         }
         Some((rect, out))
     }
+
+    /// Control center: Wi-Fi / Bluetooth switches, volume and brightness, battery and
+    /// shortcuts into Settings. Anchored above the right end of the dock.
+    fn draw_cc(&mut self, f: &mut Frame, input: &Input, shared: &Shared, pal: &Palette, right_edge: f32) -> [f32; 4] {
+        let a = ease_out_cubic(self.cc_a);
+        let (wifi_name, volume, muted, brightness, bt_dev) = {
+            let m = shared.misc.read();
+            (m.wifi.clone(), m.volume, m.muted, m.brightness, m.bt_devices.first().map(|d| d.name.clone()))
+        };
+        let battery = shared.sys.read().battery.clone();
+        let radios = *self.radios.lock();
+        let w = 352.0;
+        let tile_h = 56.0;
+        let has_bri = brightness.is_some();
+        let h = 16.0 + (tile_h + 24.0) * 2.0 + 6.0 + if has_bri { 42.0 } else { 0.0 } + 42.0 + 46.0;
+        let x = (right_edge - w).max(8.0);
+        let y = TIP_H - h - 6.0 + 12.0 * (1.0 - a);
+        let rect = [x, y, w, h];
+        f.scene.shape(Shape::rect(x, y + 4.0, w, h, 22.0, [0.0, 0.0, 0.0, 0.32 * a]).soft(18.0));
+        f.scene.shape(Shape::rect(x, y, w, h, 22.0, [0.06, 0.06, 0.09, 0.95 * a]));
+        f.scene.shape(Shape::rect(x, y, w, h, 22.0, with_a(pal.primary, 0.08 * a)).grad(with_a(pal.secondary, 0.04 * a), 0.4));
+        f.scene.shape(Shape::stroke(x, y, w, h, 22.0, 1.0, with_a(WHITE, 0.22 * a)));
+        let _ = pal;
+        let accent = rgba(70, 140, 255, 1.0);
+
+        // ---- tiles
+        enum Act {
+            Radio(bool),
+            Open(&'static str),
+        }
+        let wifi_on = radios.wifi.or(Some(wifi_name.is_some()));
+        let tiles: [(char, String, Option<bool>, Act, Option<&'static str>); 6] = [
+            (
+                if wifi_on == Some(false) { ic::WIFI_OFF } else { ic::WIFI },
+                if wifi_on == Some(true) { wifi_name.clone().unwrap_or_else(|| "Wi-Fi".into()) } else { "Wi-Fi".into() },
+                wifi_on,
+                if radios.wifi.is_some() { Act::Radio(true) } else { Act::Open("ms-settings:network-wifi") },
+                Some("ms-settings:network-wifi"),
+            ),
+            (
+                ic::BT,
+                match (radios.bluetooth, &bt_dev) {
+                    (Some(true), Some(d)) => d.clone(),
+                    _ => "Bluetooth".into(),
+                },
+                radios.bluetooth,
+                if radios.bluetooth.is_some() { Act::Radio(false) } else { Act::Open("ms-settings:bluetooth") },
+                Some("ms-settings:bluetooth"),
+            ),
+            ('\u{E709}', "Airplane mode".into(), None, Act::Open("ms-settings:network-airplanemode"), None),
+            ('\u{E708}', "Night light".into(), None, Act::Open("ms-settings:nightlight"), None),
+            ('\u{EBAA}', "Energy saver".into(), None, Act::Open("ms-settings:batterysaver"), None),
+            ('\u{E7EF}', "Do not disturb".into(), None, Act::Open("ms-settings:notifications"), None),
+        ];
+        let tw = (w - 32.0 - 2.0 * 10.0) / 3.0;
+        for (i, (g, label, on, act, more)) in tiles.into_iter().enumerate() {
+            let tx = x + 16.0 + (i % 3) as f32 * (tw + 10.0);
+            let ty = y + 16.0 + (i / 3) as f32 * (tile_h + 24.0);
+            let r = [tx, ty, tw, tile_h];
+            let hov = input.over(r);
+            let active = on == Some(true);
+            let bg = if active { with_a(accent, 0.92 * a) } else { with_a(WHITE, if hov { 0.12 } else { 0.07 } * a) };
+            f.scene.shape(Shape::rect(tx, ty, tw, tile_h, 12.0, bg));
+            if !active {
+                f.scene.shape(Shape::stroke(tx, ty, tw, tile_h, 12.0, 1.0, with_a(WHITE, 0.08 * a)));
+            }
+            let fg = if active { with_a([0.03, 0.04, 0.08, 1.0], a) } else { with_a(WHITE, 0.92 * a) };
+            let split = more.is_some();
+            let icx = if split { tx + tw * 0.34 } else { tx + tw / 2.0 };
+            f.icon(g, icx, ty + tile_h / 2.0, 15.0, fg);
+            let mut main_r = r;
+            if let Some(target) = more {
+                // right third: chevron that opens the full settings page
+                let cr = [tx + tw * 0.66, ty, tw * 0.34, tile_h];
+                main_r = [tx, ty, tw * 0.66, tile_h];
+                f.scene.shape(Shape::rect(cr[0], ty + 12.0, 1.0, tile_h - 24.0, 0.5, with_a(fg, 0.25)));
+                f.icon('\u{E76C}', cr[0] + cr[2] / 2.0, ty + tile_h / 2.0, 10.0, fg);
+                if input.clicked(cr) {
+                    platform::open(target);
+                    self.cc_open = false;
+                }
+            }
+            let lt = f.fit(Text::new(label, tx + tw / 2.0, ty + tile_h + 5.0, 11.0, with_a(WHITE, 0.8 * a)).center(), tw + 6.0);
+            f.scene.text(lt);
+            if input.clicked(main_r) {
+                match act {
+                    Act::Radio(is_wifi) => {
+                        let cur = if is_wifi { radios.wifi } else { radios.bluetooth }.unwrap_or(false);
+                        let _ = self.radio_tx.send(desktop::RadioCmd::Set { wifi: is_wifi, on: !cur });
+                        // show the new state right away
+                        let mut st = self.radios.lock();
+                        if is_wifi {
+                            st.wifi = Some(!cur);
+                        } else {
+                            st.bluetooth = Some(!cur);
+                        }
+                    }
+                    Act::Open(uri) => {
+                        platform::open(uri);
+                        self.cc_open = false;
+                    }
+                }
+            }
+        }
+
+        // ---- sliders (brightness on laptops, volume)
+        let mut sy = y + 16.0 + (tile_h + 24.0) * 2.0 + 6.0;
+        if let Some((_, t)) = self.cc_bri {
+            if t.elapsed() > Duration::from_secs(3) {
+                self.cc_bri = None;
+            }
+        }
+        let mut rows: Vec<(u8, char, f32)> = vec![];
+        if let Some(b) = brightness {
+            rows.push((2, ic::BRIGHT, self.cc_bri.map(|x| x.0).unwrap_or(b)));
+        }
+        let vg = if muted || volume <= 0.001 { ic::MUTE } else if volume < 0.4 { ic::VOLUME1 } else { ic::VOLUME };
+        rows.push((1, vg, if muted { 0.0 } else { volume }));
+        for (id, g, val) in rows {
+            let val = match self.cc_drag {
+                Some((d, v)) if d == id => v,
+                _ => val,
+            };
+            let gx = x + 30.0;
+            let cy = sy + 18.0;
+            if f.icon_button(input, g, gx, cy, 13.0, with_a(WHITE, 0.9 * a)) && id == 1 {
+                desktop::toggle_mute();
+            }
+            let bx = x + 56.0;
+            let bw = w - 56.0 - 28.0;
+            let track = [bx - 8.0, cy - 12.0, bw + 16.0, 24.0];
+            f.scene.shape(Shape::rect(bx, cy - 2.0, bw, 4.0, 2.0, with_a(WHITE, 0.16 * a)));
+            f.scene.glow_shape(Shape::rect(bx, cy - 2.0, (bw * val).max(4.0), 4.0, 2.0, with_a(accent, a)));
+            let kx = bx + bw * val;
+            f.scene.shape(Shape::glow(kx, cy, 9.0, with_a(BLACK, 0.4 * a), 1.0));
+            f.scene.shape(Shape::rect(kx - 7.0, cy - 7.0, 14.0, 14.0, 7.0, with_a(WHITE, a)));
+            f.scene.shape(Shape::rect(kx - 3.5, cy - 3.5, 7.0, 7.0, 3.5, with_a(accent, a)));
+            if input.pressed && input.over(track) {
+                self.cc_drag = Some((id, val));
+            }
+            if let Some((d, _)) = self.cc_drag {
+                if d == id {
+                    self.busy = true;
+                    if let Some((mx, _)) = input.mouse {
+                        let nv = ((mx - bx) / bw).clamp(0.0, 1.0);
+                        if id == 1 && (nv - val).abs() > 0.005 {
+                            desktop::set_volume(nv);
+                        }
+                        self.cc_drag = Some((id, nv));
+                    }
+                    if !input.down {
+                        let v = self.cc_drag.map(|x| x.1).unwrap_or(val);
+                        if id == 2 {
+                            desktop::set_brightness(v);
+                            self.cc_bri = Some((v, Instant::now()));
+                        }
+                        self.cc_drag = None;
+                    }
+                }
+            }
+            if input.over(track) && input.scroll.abs() > 0.01 && self.cc_drag.is_none() {
+                let nv = (val + 0.05 * input.scroll.signum()).clamp(0.0, 1.0);
+                if id == 1 {
+                    desktop::set_volume(nv);
+                } else {
+                    desktop::set_brightness(nv);
+                    self.cc_bri = Some((nv, Instant::now()));
+                }
+            }
+            sy += 42.0;
+        }
+
+        // ---- footer: battery + settings
+        let fy = y + h - 46.0;
+        f.scene.shape(Shape::rect(x + 1.0, fy, w - 2.0, 1.0, 0.5, with_a(WHITE, 0.08 * a)));
+        let cy = fy + 23.0;
+        if let Some(b) = &battery {
+            let frac = (b.percent / 100.0).clamp(0.0, 1.0);
+            let bx = x + 20.0;
+            let bc = if b.charging || b.on_ac {
+                rgba(120, 255, 160, 1.0)
+            } else if frac < 0.2 {
+                rgba(255, 90, 90, 1.0)
+            } else {
+                WHITE
+            };
+            f.scene.shape(Shape::stroke(bx, cy - 5.5, 20.0, 11.0, 3.5, 1.2, with_a(WHITE, 0.6 * a)));
+            f.scene.shape(Shape::rect(bx + 20.5, cy - 2.0, 2.0, 4.0, 1.0, with_a(WHITE, 0.6 * a)));
+            f.scene.shape(Shape::rect(bx + 2.0, cy - 3.5, (16.0 * frac).max(1.5), 7.0, 2.0, with_a(bc, a)));
+            let label = format!("{:.0}%{}", b.percent, if b.charging { "  ·  charging" } else { "" });
+            f.scene.text(Text::new(label, bx + 30.0, cy - 8.0, 12.0, with_a(WHITE, 0.85 * a)).weight(600));
+            if input.clicked([x + 10.0, fy + 4.0, 160.0, 38.0]) {
+                platform::open("ms-settings:batterysaver");
+                self.cc_open = false;
+            }
+        }
+        if f.icon_button(input, ic::SETTINGS, x + w - 30.0, cy, 12.5, with_a(WHITE, 0.85 * a)) {
+            platform::open("ms-settings:");
+            self.cc_open = false;
+        }
+        rect
+    }
+
 
     /// The wallpaper dial: a curved carousel of thumbnails above the dock.
     fn draw_dial(&mut self, f: &mut Frame, input: &Input, pal: &Palette) -> Option<[f32; 4]> {

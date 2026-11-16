@@ -58,7 +58,7 @@ A gentle rim of light around your screen in the album's colours, pulsing to the 
 A floating glass bar along the bottom of the screen, tinted by the album colours. Turn it on from the tray menu or the island's Settings tab. Music stays on the island at the top.
 - **Middle:** Start, search (the island launcher) and Task View, then every app pinned to your Windows taskbar, in the same order, plus any other open apps. Each app shows its real icon, running dots and notification badges. The app you're using expands to show its window title.
 - **Left:** weather, CPU and RAM rings (click for Task Manager), a one-click focus timer and the wallpaper dial.
-- **Right:** Wi-Fi, volume (scroll to change it) and battery (click for quick settings), the clock (click for notifications and calendar) and a show-desktop strip.
+- **Right:** Wi-Fi, volume (scroll to change it) and battery, the clock (click for notifications and calendar) and a show-desktop strip. Click the Wi-Fi/volume/battery area to open the **control center**. It has Wi-Fi and Bluetooth switches, volume and brightness sliders, battery, and shortcuts to airplane mode, night light, energy saver, do not disturb and Settings. Click again, or anywhere else, to close it.
 - Click an app to switch to it, click again to minimize (or to cycle its windows). Right-click for all its windows (switch to or close each one), a new window, close all, and pin or hide options.
 - **Wallpaper dial:** click the dial button or scroll over it to flip through the images in `Pictures\Wallpapers` (or the `wallpaper_dir` setting). The wallpaper changes once the dial stops.
 - Maximized windows stop above the dock.
@@ -68,7 +68,11 @@ A floating glass bar along the bottom of the screen, tinted by the album colours
 
 ## Download (easiest)
 
-Grab **`aurolo.exe`** from the [latest release](https://github.com/kirzen29/aurolo/releases/latest) and double-click it. You don't need Rust or any build tools. Aurolo runs from the system tray; right-click its icon for options, including **Start with Windows**.
+Grab a build from the [latest release](https://github.com/kirzen29/aurolo/releases/latest) and double-click `aurolo.exe`. You don't need Rust or any build tools. There are two downloads:
+- **Aurolo-with-taskbar**: everything, including the taskbar dock, control center and wallpaper dial.
+- **Aurolo-without-taskbar**: the island, lyrics widget and edge glow only (version 0.1.1, before the dock).
+
+ Aurolo runs from the system tray; right-click its icon for options, including **Start with Windows**.
 
 Windows SmartScreen may warn the first time because the exe isn't code-signed. Click **More info → Run anyway**.
 
@@ -103,6 +107,8 @@ To install it so **Aurolo** shows up in Windows search and the Start menu, run t
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
 It builds Aurolo, copies it to `%LOCALAPPDATA%\Programs\Aurolo`, adds a Start menu shortcut and starts it.
+
+To use your own app icon, save it as `assets\aurolo-custom.ico` and build again. That file is git-ignored, so it stays on your PC.
 
 Aurolo runs in the background with an icon in the system tray. Right-click the tray icon for options, including **Start with Windows**.
 
