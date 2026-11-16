@@ -53,6 +53,14 @@ pub fn ease_out_cubic(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 
+/// Overshoots past 1 then settles: the springy "pop".
+pub fn ease_out_back(t: f32) -> f32 {
+    let t = clamp01(t);
+    let c1 = 2.2;
+    let c3 = c1 + 1.0;
+    1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2)
+}
+
 pub fn ease_in_out(t: f32) -> f32 {
     let t = clamp01(t);
     if t < 0.5 { 4.0 * t * t * t } else { 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0 }

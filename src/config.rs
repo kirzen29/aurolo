@@ -7,15 +7,22 @@ pub enum LyricStyle {
     Karaoke,
     Constellation,
     Drift,
+    /// Album banner on the left, lyrics scrolling up beside it (Spotify-style), beat-synced.
+    Banner,
+    /// Words pop out one by one exactly as they're sung.
+    Pop,
 }
 
 impl LyricStyle {
-    pub const ALL: [LyricStyle; 3] = [LyricStyle::Constellation, LyricStyle::Karaoke, LyricStyle::Drift];
+    pub const ALL: [LyricStyle; 5] =
+        [LyricStyle::Constellation, LyricStyle::Karaoke, LyricStyle::Banner, LyricStyle::Pop, LyricStyle::Drift];
     pub fn name(self) -> &'static str {
         match self {
             LyricStyle::Karaoke => "Karaoke",
             LyricStyle::Constellation => "Constellation",
             LyricStyle::Drift => "3D Drift",
+            LyricStyle::Banner => "Banner",
+            LyricStyle::Pop => "Pop",
         }
     }
     pub fn next(self) -> Self {

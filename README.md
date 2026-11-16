@@ -40,14 +40,16 @@ A floating card you can drag anywhere and resize from its corner.
 
 - **Layouts:** full (art, title, controls and lyrics) or lyrics only.
 - **Backgrounds:** glass (see-through), solid, or none (just glowing lyrics floating on your screen).
-- **Three lyric styles:** Constellation, Karaoke glow and 3D Drift.
+- **Five lyric styles:** Constellation, Karaoke glow, Banner, Pop and 3D Drift.
 
 ### Fullscreen lyrics
 Press `Ctrl+Alt+L`.
 
 - **Constellation:** each word is a star. Sung words ignite and link into a constellation that drifts into the starfield when the line ends.
-- **Karaoke glow:** an Apple Music-style scrolling list with word-by-word fill.
+- **Karaoke glow:** an Apple Music-style scrolling list. Each word fills with a soft feathered sweep, and the glow breathes with the beat.
 - **3D Drift:** lines float in depth, with warp-speed particles that speed up with the music.
+- **Banner:** a Spotify-style view. Big album art with the song name and a beat visualiser on the left, and lyrics scrolling up beside it, lighting up word by word. The art and background pulse with the beat.
+- **Pop:** words pop out one at a time exactly as they're sung, with a springy bounce. The word being sung pulses with the beat.
 
 ### Edge glow
 A gentle rim of light around your screen in the album's colours, pulsing to the beat. It's click-through and shows only while music plays.

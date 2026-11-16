@@ -41,6 +41,21 @@ pub fn apply_cfg(cfg: &mut Config) {
         "none" => WidgetBg::None,
         _ => WidgetBg::Glass,
     };
+    if let Ok(s) = std::env::var("AUROLO_DEMO_STYLE") {
+        use crate::config::LyricStyle as L;
+        let st = match s.as_str() {
+            "karaoke" => Some(L::Karaoke),
+            "constellation" => Some(L::Constellation),
+            "drift" => Some(L::Drift),
+            "banner" => Some(L::Banner),
+            "pop" => Some(L::Pop),
+            _ => None,
+        };
+        if let Some(st) = st {
+            cfg.widget_style = st;
+            cfg.fullscreen_style = st;
+        }
+    }
     cfg.widget_size_full = None;
     cfg.widget_size_lyrics = None;
     cfg.edge_glow = true;

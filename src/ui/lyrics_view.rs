@@ -106,6 +106,10 @@ impl LyricView {
             (LyricStyle::Constellation, false) => (rect[3] * 0.12).clamp(11.0, 26.0),
             (LyricStyle::Drift, true) => (rect[3] * 0.06).clamp(26.0, 58.0),
             (LyricStyle::Drift, false) => (rect[3] * 0.18).clamp(14.0, 40.0),
+            (LyricStyle::Banner, true) => (rect[3] * 0.052).clamp(24.0, 58.0),
+            (LyricStyle::Banner, false) => (rect[3] * 0.17).clamp(13.0, 32.0),
+            (LyricStyle::Pop, true) => (rect[3] * 0.078).clamp(30.0, 84.0),
+            (LyricStyle::Pop, false) => (rect[3] * 0.25).clamp(16.0, 46.0),
         }
     }
 
@@ -246,6 +250,15 @@ impl LyricView {
             LyricStyle::Karaoke => self.karaoke(f, rect, ly, media, pal, audio, pos, big),
             LyricStyle::Constellation => self.constellation(f, rect, ly, pal, audio, pos, big),
             LyricStyle::Drift => self.drift(f, rect, ly, media, pal, audio, pos, big),
+            LyricStyle::Banner => self.banner(f, rect, ly, media, pal, audio, pos, big),
+            LyricStyle::Pop => {
+                if ly.status == LyricStatus::Plain {
+                    // unsynced lyrics can't pop word-by-word; fall back to the scrolling list
+                    self.karaoke(f, rect, ly, media, pal, audio, pos, big)
+                } else {
+                    self.pop(f, rect, ly, pal, audio, pos, big)
+                }
+            }
         }
     }
 
@@ -284,6 +297,8 @@ impl LyricView {
             let (_, kb) = f.ensure_art(art);
             let op = match self.style {
                 LyricStyle::Karaoke => 0.55,
+                LyricStyle::Banner => 0.78,
+                LyricStyle::Pop => 0.5,
                 LyricStyle::Constellation => 0.22,
                 LyricStyle::Drift => 0.3,
             };
@@ -308,7 +323,7 @@ impl LyricView {
             let by = y + h * (0.5 + 0.28 * (f.t * sp * 1.3 + ph * 1.7).cos());
             let r = w.max(h) * (0.32 + 0.04 * i as f32) * (1.0 + pulse * 0.06);
             let a = match self.style {
-                LyricStyle::Karaoke => 0.22,
+                LyricStyle::Karaoke | LyricStyle::Banner | LyricStyle::Pop => 0.22,
                 _ => 0.16,
             };
             f.scene.shape(Shape::glow(bx, by, r, with_a(*c, a + pulse * 0.05), 1.6).additive());
@@ -316,6 +331,10 @@ impl LyricView {
         match self.style {
             LyricStyle::Constellation => self.starfield(f, rect, pal, audio, 260, 1.0),
             LyricStyle::Drift => self.warp_field(f, rect, pal, audio, 170),
+            LyricStyle::Banner | LyricStyle::Pop => {
+                // the whole room breathes with the beat
+                f.scene.shape(Shape::rect(x, y, w, h, 0.0, with_a(pal.primary, 0.0)).radial(with_a(pal.primary, 0.10 * pulse)).additive());
+            }
             LyricStyle::Karaoke => {}
         }
     }
@@ -475,7 +494,8 @@ impl LyricView {
             let line = &ly.lines[i];
             let Some(lay) = self.layouts.get(&i) else { continue };
             let d = i as f32 - sv;
-            let s = 1.0 - 0.16 * d.abs().min(1.0);
+            // current line full size; neighbours recede in depth
+            let s = 1.0 - 0.18 * d.abs().min(1.0) - 0.04 * (d.abs() - 1.0).clamp(0.0, 2.0);
             let y_top = focus_y + self.cum[i] - off;
             if y_top > rect[1] + rect[3] || y_top + lay.h < rect[1] {
                 continue;
@@ -486,10 +506,14 @@ impl LyricView {
             let base_a = if plain {
                 if Some(i) == cur { 0.95 } else { 0.42 }
             } else if is_cur {
-                0.34
+                0.30
+            } else if d < 0.0 {
+                // already sung: a touch brighter than what's coming
+                (0.42 - 0.09 * d.abs()).max(0.06)
             } else {
-                (0.40 - 0.07 * d.abs()).max(0.08)
+                (0.34 - 0.07 * d.abs()).max(0.06)
             };
+            let pulse = audio.pulse();
             for (j, wb) in lay.words.iter().enumerate() {
                 let text = if line.words.is_empty() {
                     line.text.split_whitespace().nth(j).unwrap_or("").to_string()
@@ -503,7 +527,7 @@ impl LyricView {
                     let w = &line.words[j];
                     p = ((pos - w.t) / (w.end - w.t).max(0.05)).clamp(0.0, 1.0) as f32;
                     let bump = if p > 0.0 && p < 1.0 { (p * std::f32::consts::PI).sin() } else { 0.0 };
-                    wy -= bump * size * 0.06;
+                    wy -= bump * size * (0.07 + 0.05 * pulse);
                 }
                 let base = Text::new(text, wx, wy, size, with_a(WHITE, base_a * fade_edge))
                     .family(Family::Lyric)
@@ -515,15 +539,262 @@ impl LyricView {
                 if is_cur && p > 0.0 {
                     let ww = wb.w * s;
                     let fill_x = wx + ww * p;
-                    let lit = Text { color: with_a(WHITE, fade_edge), clip: Some([wx - 2.0, clip[1], fill_x + 1.0, clip[3]]), ..base.clone() };
+                    // solid fill up to the sweep, then a soft feathered edge instead of a hard cut
+                    let lit_c = mix(WHITE, pal.light, 0.15);
+                    let lit = Text { color: with_a(lit_c, fade_edge), clip: Some([wx - 2.0, clip[1], fill_x + 1.0, clip[3]]), ..base.clone() };
                     f.scene.text(lit);
-                    let glow_c = mix(pal.primary, WHITE, 0.25);
-                    let ga = if p < 1.0 { 0.95 } else { 0.55 } * (1.0 + audio.pulse() * 0.4);
+                    if p < 1.0 {
+                        let feather = (size * 0.55).min(ww * (1.0 - p));
+                        for (k, fa) in [(0, 0.62f32), (1, 0.36), (2, 0.16)] {
+                            let a0 = fill_x + feather * k as f32 / 3.0;
+                            let a1 = fill_x + feather * (k + 1) as f32 / 3.0;
+                            f.scene.text(Text { color: with_a(lit_c, fa * fade_edge), clip: Some([a0, clip[1], a1 + 0.5, clip[3]]), ..base.clone() });
+                        }
+                    }
+                    // glow: strong on the word being sung, softer trail on sung words, breathing with the beat
+                    let glow_c = mix(pal.primary, WHITE, 0.3);
+                    let breathe = 0.85 + 0.15 * (f.t * 2.2).sin();
+                    let ga = if p < 1.0 { 1.0 } else { 0.5 } * breathe * (1.0 + pulse * 0.6);
                     f.scene.halo_text(Text {
                         color: with_a(glow_c, (ga * fade_edge).min(1.0)),
                         clip: Some([wx - size, clip[1], fill_x + size * 0.3, clip[3]]),
                         ..base
                     });
+                }
+            }
+        }
+    }
+
+    // ----------------------------------------------------------------- banner
+
+    /// Album banner on the left (art, title, beat visualiser); lyrics scroll up beside it,
+    /// left-aligned, sung words light up. Everything pulses with the beat.
+    #[allow(clippy::too_many_arguments)]
+    fn banner(
+        &mut self,
+        f: &mut Frame,
+        rect: [f32; 4],
+        ly: &LyricsState,
+        media: &MediaState,
+        pal: &Palette,
+        audio: &AudioState,
+        pos: f64,
+        big: bool,
+    ) {
+        let [x, y, w, h] = rect;
+        let size = self.font_size;
+        let pulse = audio.pulse();
+        let clip = [x, y, x + w, y + h];
+
+        // ---- the banner
+        // big banner art only in fullscreen; the widget already shows art in its header
+        let show_art = big && !self.minimal && w > h * 1.3;
+        let mut lx = x + if big { w * 0.08 } else { 2.0 };
+        if show_art {
+            let side = if big { (h * 0.44).min(w * 0.3) } else { (h * 0.9).min(w * 0.3) };
+            let ax = x + if big { w * 0.08 } else { 0.0 };
+            let ay = y + (h - side) / 2.0 - if big { h * 0.06 } else { 0.0 };
+            let (acx, acy) = (ax + side / 2.0, ay + side / 2.0);
+            let kick = 1.0 + 0.035 * pulse;
+            let sw = side * kick;
+            f.scene.halo_shape(Shape::glow(acx, acy, side * 0.9, with_a(pal.primary, 0.3 + 0.4 * pulse), 1.3));
+            f.scene.shape(Shape::rect(acx - sw / 2.0, acy - sw / 2.0 + side * 0.04, sw, sw, side * 0.07, [0.0, 0.0, 0.0, 0.45]).soft(side * 0.12));
+            if let Some(art) = &media.art {
+                let (k, _) = f.ensure_art(art);
+                f.scene.image(ImageDraw::new(k, acx - sw / 2.0, acy - sw / 2.0, sw, sw, side * 0.07));
+            } else {
+                f.scene.shape(Shape::rect(acx - sw / 2.0, acy - sw / 2.0, sw, sw, side * 0.07, with_a(pal.primary, 0.35)));
+                f.icon(crate::ui::ic::MUSIC, acx, acy, side * 0.25, with_a(WHITE, 0.8));
+            }
+            f.scene.layer();
+            if big {
+                let tw = w * 0.32;
+                let t = f.fit(Text::new(&media.title, ax, ay + side + 26.0, 30.0, WHITE).weight(700).family(Family::Display), tw);
+                f.scene.text(t);
+                let a = f.fit(Text::new(&media.artist, ax, ay + side + 66.0, 19.0, with_a(WHITE, 0.65)), tw);
+                f.scene.text(a);
+                // beat visualiser under the banner
+                let n = 32;
+                let vy = ay + side + 128.0;
+                let bw = side / n as f32;
+                for k in 0..n {
+                    let v = audio.bands[k * BANDS / n];
+                    let bh = 3.0 + v * 46.0;
+                    let c = mix(pal.primary, pal.secondary, k as f32 / n as f32);
+                    f.scene.glow_shape(Shape::rect(ax + k as f32 * bw, vy - bh, bw * 0.6, bh, bw * 0.3, with_a(c, 0.95)));
+                }
+            }
+            lx = ax + side + if big { w * 0.07 } else { 18.0 };
+        }
+
+        // ---- lyrics column
+        let col_w = (x + w - lx - if big { w * 0.07 } else { 4.0 }).max(80.0);
+        self.ensure_layouts(f, ly, size, col_w);
+        let plain = ly.status == LyricStatus::Plain;
+        let cur = if plain {
+            let frac = if media.duration > 0.0 { pos / media.duration } else { 0.0 };
+            Some(((frac * ly.lines.len() as f64) as usize).min(ly.lines.len() - 1))
+        } else {
+            ly.line_at(pos)
+        };
+        self.scroll.set(cur.map(|c| c as f32).unwrap_or(-0.6));
+        let sv = self.scroll.step(f.dt.min(0.05));
+        let focus_y = y + h * if big { 0.36 } else { 0.24 };
+        let off = self.cum_at(sv.max(0.0)) + if sv < 0.0 { sv * size * 1.8 } else { 0.0 };
+        let first = cur.unwrap_or(0).saturating_sub(5);
+        let last = (cur.unwrap_or(0) + 9).min(ly.lines.len());
+        for i in first..last {
+            let line = &ly.lines[i];
+            let Some(lay) = self.layouts.get(&i) else { continue };
+            let y_top = focus_y + self.cum[i] - off;
+            if y_top > y + h || y_top + lay.h < y {
+                continue;
+            }
+            let fade_edge = smooth(y, y + size * FADE_TOP, y_top) * smooth(y + h, y + h - size * FADE_TOP, y_top + lay.h * 0.6);
+            let is_cur = Some(i) == cur;
+            let past = cur.map(|c| i < c).unwrap_or(false);
+            // left-align each wrapped row
+            let mut row_min: Vec<(f32, f32)> = vec![];
+            for wb in &lay.words {
+                match row_min.iter_mut().find(|r| (r.0 - wb.y).abs() < 0.5) {
+                    Some(r) => r.1 = r.1.min(wb.x),
+                    None => row_min.push((wb.y, wb.x)),
+                }
+            }
+            let kick = if is_cur { 1.0 + 0.012 * pulse } else { 1.0 };
+            for (j, wb) in lay.words.iter().enumerate() {
+                let text = if line.words.is_empty() {
+                    line.text.split_whitespace().nth(j).unwrap_or("").to_string()
+                } else {
+                    line.words[j].text.clone()
+                };
+                let rmin = row_min.iter().find(|r| (r.0 - wb.y).abs() < 0.5).map(|r| r.1).unwrap_or(0.0);
+                let wx = lx + (wb.x - rmin) * kick;
+                let wy = y_top + wb.y;
+                let (alpha, sung) = if plain {
+                    (if is_cur { 1.0 } else { 0.5 }, 0.0)
+                } else if is_cur {
+                    let w = &line.words[j];
+                    let k = smooth((w.t - 0.02) as f32, (w.t + 0.18) as f32, pos as f32);
+                    (0.42 + 0.58 * k, k)
+                } else if past {
+                    (0.6, 0.0)
+                } else {
+                    (0.26, 0.0)
+                };
+                let t = Text::new(text, wx, wy, size, with_a(WHITE, alpha * fade_edge))
+                    .family(Family::Lyric)
+                    .weight(650)
+                    .lh(1.2)
+                    .scale(kick)
+                    .clip(clip);
+                if sung > 0.0 {
+                    f.scene.halo_text(Text { color: with_a(mix(pal.primary, WHITE, 0.35), 0.55 * sung * (1.0 + pulse * 0.5) * fade_edge), ..t.clone() });
+                }
+                f.scene.text(t);
+            }
+        }
+        // intro / long instrumental: dots in the lyrics column
+        let cur_empty = cur.map(|c| ly.lines[c].text.trim().is_empty()).unwrap_or(true);
+        if !plain && cur_empty {
+            let next_t = match cur {
+                Some(c) => ly.lines.get(c + 1).map(|l| l.t),
+                None => ly.lines.first().map(|l| l.t),
+            };
+            let start = cur.map(|c| ly.lines[c].t).unwrap_or(0.0);
+            if let Some(nt) = next_t {
+                if nt - pos > 1.2 {
+                    let prog = ((pos - start) / (nt - start).max(0.1)).clamp(0.0, 1.0) as f32;
+                    self.dots(f, lx + size * 1.2, focus_y - size * 1.2, size, prog, pal, audio);
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------- pop
+
+    /// Words pop out one at a time exactly as they're sung, with a springy overshoot.
+    /// The word being sung bounces with the beat; the line kicks on every beat.
+    #[allow(clippy::too_many_arguments)]
+    fn pop(&mut self, f: &mut Frame, rect: [f32; 4], ly: &LyricsState, pal: &Palette, audio: &AudioState, pos: f64, big: bool) {
+        let [x, y, w, h] = rect;
+        let size = self.font_size;
+        let max_w = w * if big { 0.8 } else { 0.94 };
+        self.ensure_layouts(f, ly, size, max_w);
+        let pulse = audio.pulse();
+        let clip = [x, y, x + w, y + h];
+        let cx = x + w / 2.0;
+        let cy = y + h * if big { 0.46 } else { 0.5 };
+        let cur = ly.line_at(pos);
+
+        let mut todo: Vec<(usize, f32)> = vec![]; // (line, exit 0..1)
+        if let Some(c) = cur {
+            if c > 0 {
+                let ex = smooth(ly.lines[c].t as f32, ly.lines[c].t as f32 + 0.32, pos as f32);
+                if ex < 1.0 {
+                    todo.push((c - 1, ex));
+                }
+            }
+            // long gap after a line: let it fade out instead of lingering
+            let line = &ly.lines[c];
+            let next_t = ly.lines.get(c + 1).map(|n| n.t).unwrap_or(line.end + 4.0);
+            let linger = if next_t - line.end > 2.5 { smooth(line.end as f32 + 1.2, line.end as f32 + 1.8, pos as f32) } else { 0.0 };
+            todo.push((c, linger));
+        }
+        let mut any = false;
+        for (i, exit) in todo {
+            let line = &ly.lines[i];
+            let Some(lay) = self.layouts.get(&i).cloned() else { continue };
+            if line.words.is_empty() {
+                continue;
+            }
+            any = true;
+            let is_cur = Some(i) == cur;
+            let kick = if is_cur { 1.0 + 0.045 * pulse } else { 1.0 };
+            let gs = (1.0 - 0.18 * exit) * kick;
+            let ga = 1.0 - exit;
+            let top = cy - lay.h * gs / 2.0 - exit * size * 1.4;
+            for (j, wb) in lay.words.iter().enumerate() {
+                let wd = &line.words[j];
+                let ts = (pos - wd.t) as f32;
+                if is_cur && ts < 0.0 {
+                    continue; // not sung yet: hasn't popped
+                }
+                let u = (ts / 0.36).clamp(0.0, 1.0);
+                let e = if is_cur { ease_out_back(u) } else { 1.0 };
+                let active = is_cur && pos < wd.end;
+                let mut sc = gs * (0.35 + 0.65 * e);
+                if active {
+                    sc *= 1.0 + 0.09 * pulse;
+                }
+                let appear = if is_cur { smooth(0.0, 0.07, ts) } else { 1.0 };
+                let wcx = cx + (wb.x + wb.w / 2.0) * gs;
+                let lift = (1.0 - e.min(1.0)) * size * 0.5;
+                let wy = top + (wb.y + size * 0.6) * gs - size * 0.6 * sc + lift;
+                let col = if active { mix(pal.light, WHITE, 0.4) } else { WHITE };
+                let t = Text::new(wd.text.clone(), wcx, wy, size, with_a(col, appear * ga))
+                    .family(Family::Lyric)
+                    .weight(700)
+                    .lh(1.2)
+                    .center()
+                    .scale(((sc * 50.0).round() / 50.0).max(0.1))
+                    .clip(clip);
+                let gc = if j % 2 == 0 { pal.primary } else { pal.secondary };
+                let glow = if active { 1.0 } else { 0.4 } * (1.0 + pulse * 0.5);
+                f.scene.halo_text(Text { color: with_a(mix(gc, WHITE, 0.25), (glow * appear * ga).min(1.0)), ..t.clone() });
+                f.scene.text(t);
+            }
+        }
+        if !any {
+            let next = match cur {
+                Some(c) => ly.lines.get(c + 1),
+                None => ly.lines.first(),
+            };
+            if let Some(n) = next {
+                let start = cur.map(|c| ly.lines[c].end).unwrap_or(0.0);
+                if n.t - pos > 0.8 {
+                    let prog = ((pos - start) / (n.t - start).max(0.1)).clamp(0.0, 1.0) as f32;
+                    self.dots(f, cx, cy, size * 0.9, prog, pal, audio);
                 }
             }
         }
