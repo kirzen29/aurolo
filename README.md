@@ -56,6 +56,14 @@ A gentle rim of light around your screen in the album's colours, pulsing to the 
 
 ---
 
+## Download (easiest)
+
+Grab **`aurolo.exe`** from the [latest release](https://github.com/kirzen29/aurolo/releases/latest) and double-click it. You don't need Rust or any build tools. Aurolo runs from the system tray; right-click its icon for options, including **Start with Windows**.
+
+Windows SmartScreen may warn the first time because the exe isn't code-signed. Click **More info → Run anyway**.
+
+---
+
 ## Build it yourself
 
 ### Requirements
