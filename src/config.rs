@@ -93,7 +93,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             island: true,
-            island_glass: true,
+            island_glass: false,
             lyrics_widget: true,
             edge_glow: true,
             widget_style: LyricStyle::Karaoke,

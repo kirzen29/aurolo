@@ -372,7 +372,7 @@ impl App {
     }
 
     fn build_tray(&mut self) {
-        let island = CheckMenuItem::new("Island", true, self.cfg.island, None);
+        let island = CheckMenuItem::new("Dynamic Island", true, self.cfg.island, None);
         let widget = CheckMenuItem::new("Lyrics widget", true, self.cfg.lyrics_widget, None);
         let edge = CheckMenuItem::new("Edge glow", true, self.cfg.edge_glow, None);
         let lyrics_only = CheckMenuItem::new("Widget: lyrics only", true, self.cfg.widget_lyrics_only, None);

@@ -1,4 +1,4 @@
-//! The island: a pill at the top of the screen that morphs between
+//! The Dynamic Island: a black pill at the top of the screen that morphs between
 //! compact, peek, HUD, notification and an expanded control centre.
 
 use std::path::PathBuf;
@@ -1270,7 +1270,9 @@ impl Island {
             f.scene.shape(Shape::rect(tx, y, tw, th, 22.0, with_a(c0, if hov { 0.22 } else { 0.12 } * a)).grad(with_a(c1, 0.06 * a), 0.9));
             f.scene.shape(Shape::stroke(tx, y, tw, th, 22.0, 1.0, with_a(c0, 0.3 * a)));
             let (cx, cy) = (tx + 40.0, y + 42.0);
-            f.scene.glow_shape(Shape::rect(cx - 22.0, cy - 22.0, 44.0, 44.0, 14.0, with_a(c0, a)).grad(with_a(c1, a), 0.8));
+            // soft halo behind the tile (separate, so bright brand colours don't blow out to white)
+            f.scene.halo_shape(Shape::rect(cx - 22.0, cy - 22.0, 44.0, 44.0, 14.0, with_a(c0, 0.35 * a)).grad(with_a(c1, 0.35 * a), 0.8));
+            f.scene.shape(Shape::rect(cx - 22.0, cy - 22.0, 44.0, 44.0, 14.0, with_a(c0, a)).grad(with_a(c1, a), 0.8));
             social_glyph(f, &s.name, cx, cy, a);
             f.scene.text(Text::new(&s.name, tx + 18.0, y + 76.0, 15.0, with_a(WHITE, a)).weight(650));
             let seen = self.social_seen.get(&s.name).cloned();
@@ -1398,10 +1400,24 @@ fn weather_icon(f: &mut Frame, cx: f32, cy: f32, r: f32, code: i32, day: bool, a
     }
 }
 
-/// Neutral monogram for a social tile (no third-party logos).
 fn social_glyph(f: &mut Frame, name: &str, cx: f32, cy: f32, a: f32) {
-    let ini = name.chars().next().unwrap_or('*').to_uppercase().to_string();
-    f.scene.text(Text::new(ini, cx, cy - 13.0, 20.0, with_a(WHITE, a)).center().weight(700).family(Family::Display));
+    let n = name.to_lowercase();
+    if n.contains("instagram") {
+        f.scene.shape(Shape::stroke(cx - 11.0, cy - 11.0, 22.0, 22.0, 7.0, 2.2, with_a(WHITE, a)));
+        f.scene.shape(Shape::stroke(cx - 5.0, cy - 5.0, 10.0, 10.0, 5.0, 2.2, with_a(WHITE, a)));
+        f.scene.shape(Shape::glow(cx + 6.2, cy - 6.2, 1.8, with_a(WHITE, a), 0.1));
+    } else if n.contains("whatsapp") {
+        f.scene.shape(Shape::stroke(cx - 11.0, cy - 11.0, 22.0, 22.0, 11.0, 2.2, with_a(WHITE, a)));
+        f.scene.shape(Shape::line(cx - 9.0, cy + 8.0, cx - 11.5, cy + 12.5, 2.4, with_a(WHITE, a)));
+        f.icon('\u{E717}', cx, cy, 10.0, with_a(WHITE, a));
+    } else if n.contains("discord") {
+        f.scene.shape(Shape::rect(cx - 12.0, cy - 8.0, 24.0, 17.0, 8.0, with_a(WHITE, a)));
+        f.scene.shape(Shape::glow(cx - 4.5, cy + 0.5, 2.6, with_a(rgba(88, 101, 242, 1.0), a), 0.1));
+        f.scene.shape(Shape::glow(cx + 4.5, cy + 0.5, 2.6, with_a(rgba(88, 101, 242, 1.0), a), 0.1));
+    } else {
+        let ini = name.chars().next().unwrap_or('•').to_uppercase().to_string();
+        f.scene.text(Text::new(ini, cx, cy - 12.0, 19.0, with_a(WHITE, a)).center().weight(700));
+    }
 }
 
 fn event_when(ev: &Event) -> String {
