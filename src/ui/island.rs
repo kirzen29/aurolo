@@ -365,6 +365,11 @@ impl Island {
         if glass {
             for layer in f.scene.layers.iter_mut().skip(content_layer) {
                 for tx in layer.texts.iter_mut() {
+                    // only light text needs it; dark text on bright buttons (e.g. "Stop") would smudge
+                    let lum = 0.299 * tx.color[0] + 0.587 * tx.color[1] + 0.114 * tx.color[2];
+                    if lum < 0.5 {
+                        continue;
+                    }
                     tx.shadow = 0.5;
                 }
             }
