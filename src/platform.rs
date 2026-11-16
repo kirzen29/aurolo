@@ -286,3 +286,79 @@ pub fn beep() {
         let _ = windows::Win32::System::Diagnostics::Debug::MessageBeep(MB_ICONASTERISK);
     }
 }
+
+/// Prevent (or allow again) system sleep and display timeout. Must be called from the
+/// long-lived UI thread: Windows ties the request to the calling thread.
+pub fn keep_awake(on: bool) {
+    use windows::Win32::System::Power::{SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED};
+    unsafe {
+        if on {
+            SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+        } else {
+            SetThreadExecutionState(ES_CONTINUOUS);
+        }
+    }
+}
+
+pub fn lock_pc() {
+    unsafe {
+        let _ = windows::Win32::System::Shutdown::LockWorkStation();
+    }
+}
+
+pub fn sleep_pc() {
+    open_with_args("rundll32.exe", "powrprof.dll,SetSuspendState 0,1,0");
+}
+
+pub fn restart_pc() {
+    open_with_args("shutdown.exe", "/r /t 0");
+}
+
+pub fn shutdown_pc() {
+    open_with_args("shutdown.exe", "/s /t 0");
+}
+
+/// Seconds since the last keyboard/mouse input.
+pub fn idle_secs() -> u64 {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut li = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    unsafe {
+        if !GetLastInputInfo(&mut li).as_bool() {
+            return 0;
+        }
+        let now = windows::Win32::System::SystemInformation::GetTickCount();
+        (now.wrapping_sub(li.dwTime) / 1000) as u64
+    }
+}
+
+/// Executable name (without .exe) of the foreground window's process.
+pub fn foreground_app() -> Option<String> {
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        if pid == 0 {
+            return None;
+        }
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; 512];
+        let mut len = buf.len() as u32;
+        let r = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, windows::core::PWSTR(buf.as_mut_ptr()), &mut len);
+        let _ = CloseHandle(h);
+        r.ok()?;
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        let name = path.rsplit(['\\', '/']).next().unwrap_or(&path).trim_end_matches(".exe").trim_end_matches(".EXE").to_string();
+        Some(name)
+    }
+}
+
+pub fn today_key() -> String {
+    let t = local_time();
+    format!("{:04}-{:02}-{:02}", t.year, t.month, t.day)
+}

@@ -265,6 +265,67 @@ impl App {
         }
     }
 
+    /// Settings changed from the island's Settings tab.
+    fn apply_cfg(&mut self, el: &ActiveEventLoop, c: crate::ui::island::CfgChange) {
+        use crate::ui::island::CfgChange as C;
+        match c {
+            C::IslandGlass => {
+                self.cfg.island_glass = !self.cfg.island_glass;
+                self.cfg.save();
+            }
+            C::Widget => {
+                let on = !self.cfg.lyrics_widget;
+                self.toggle_widget(el, on);
+            }
+            C::WidgetLayout => self.toggle_layout(),
+            C::WidgetBg => {
+                let b = self.cfg.widget_background.next();
+                self.set_bg(b);
+            }
+            C::WidgetStyle => {
+                self.cfg.widget_style = self.cfg.widget_style.next();
+                self.cfg.save();
+                if let Some((_, wd)) = &mut self.widget {
+                    wd.view.style = self.cfg.widget_style;
+                }
+                self.sync_style_checks();
+            }
+            C::FsStyle => {
+                self.cfg.fullscreen_style = self.cfg.fullscreen_style.next();
+                self.cfg.save();
+                if let Some((_, f)) = &mut self.fs {
+                    f.view.style = self.cfg.fullscreen_style;
+                }
+                self.sync_style_checks();
+            }
+            C::Edge => {
+                self.cfg.edge_glow = !self.cfg.edge_glow;
+                self.cfg.save();
+                if self.cfg.edge_glow {
+                    if self.edge.is_none() {
+                        self.create_edge(el);
+                    }
+                } else {
+                    self.edge = None;
+                }
+                if let Some(m) = &self.menu {
+                    m.edge.set_checked(self.cfg.edge_glow);
+                }
+            }
+            C::Autostart => {
+                self.cfg.autostart = !self.cfg.autostart;
+                platform::set_autostart(self.cfg.autostart);
+                self.cfg.save();
+                if let Some(m) = &self.menu {
+                    m.autostart.set_checked(self.cfg.autostart);
+                }
+            }
+            C::OpenFile => {
+                platform::open_with_args("notepad.exe", &format!("\"{}\"", crate::config::config_path().display()));
+            }
+        }
+    }
+
     fn toggle_layout(&mut self) {
         self.cfg.widget_lyrics_only = !self.cfg.widget_lyrics_only;
         self.cfg.save();
@@ -311,7 +372,7 @@ impl App {
     }
 
     fn build_tray(&mut self) {
-        let island = CheckMenuItem::new("Dynamic Island", true, self.cfg.island, None);
+        let island = CheckMenuItem::new("Island", true, self.cfg.island, None);
         let widget = CheckMenuItem::new("Lyrics widget", true, self.cfg.lyrics_widget, None);
         let edge = CheckMenuItem::new("Edge glow", true, self.cfg.edge_glow, None);
         let lyrics_only = CheckMenuItem::new("Widget: lyrics only", true, self.cfg.widget_lyrics_only, None);
@@ -543,6 +604,7 @@ impl App {
                         }
                     }
                 }
+                IslandAction::Cfg(c) => self.apply_cfg(el, c),
                 IslandAction::None => {}
             }
             return;

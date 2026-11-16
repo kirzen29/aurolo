@@ -41,6 +41,7 @@ fn main() {
     services::audio::spawn(shared.clone());
     services::sysmon::spawn(shared.clone(), cfg.lhm_url.clone());
     services::system::spawn(shared.clone());
+    services::usage::spawn(shared.clone());
     services::web::spawn(shared.clone(), cfg.weather_city.clone(), cfg.calendar_ics_url.clone());
 
     let el = EventLoop::new().expect("event loop");

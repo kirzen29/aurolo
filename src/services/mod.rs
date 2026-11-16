@@ -3,4 +3,5 @@ pub mod lyrics;
 pub mod media;
 pub mod sysmon;
 pub mod system;
+pub mod usage;
 pub mod web;

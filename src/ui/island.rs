@@ -1,4 +1,4 @@
-//! The Dynamic Island: a black pill at the top of the screen that morphs between
+//! The island: a pill at the top of the screen that morphs between
 //! compact, peek, HUD, notification and an expanded control centre.
 
 use std::path::PathBuf;
@@ -29,7 +29,35 @@ enum Tab {
     Media,
     System,
     Tools,
+    Daily,
     Social,
+    Settings,
+}
+
+/// A settings change requested from the island's Settings tab (applied by the app).
+#[derive(Clone, Copy, Debug)]
+pub enum CfgChange {
+    IslandGlass,
+    Widget,
+    WidgetLayout,
+    WidgetBg,
+    WidgetStyle,
+    FsStyle,
+    Edge,
+    Autostart,
+    OpenFile,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct Reminder {
+    text: String,
+    due: Option<i64>,
+    done: bool,
+    notified: bool,
+}
+
+fn reminders_path() -> std::path::PathBuf {
+    crate::config::data_dir().join("reminders.json")
 }
 
 pub enum IslandAction {
@@ -37,6 +65,7 @@ pub enum IslandAction {
     ToggleWidget,
     Fullscreen,
     WantFocus(bool),
+    Cfg(CfgChange),
 }
 
 enum Res {
@@ -74,6 +103,13 @@ pub struct Island {
     pub lyrics_widget_on: bool,
     pub widget_style_name: &'static str,
     caret_t: f32,
+    pub keep_awake: bool,
+    reminders: Vec<Reminder>,
+    rem_input: String,
+    rem_edit: bool,
+    power_confirm: Option<(u8, f32)>,
+    /// Debug: AUROLO_DEBUG_TAB=media|system|tools|daily|social|settings keeps the island open on that tab.
+    debug_hold: bool,
 }
 
 impl Island {
@@ -105,7 +141,33 @@ impl Island {
             lyrics_widget_on: true,
             widget_style_name: "",
             caret_t: 0.0,
+            keep_awake: false,
+            reminders: std::fs::read_to_string(reminders_path())
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default(),
+            rem_input: String::new(),
+            rem_edit: false,
+            power_confirm: None,
+            debug_hold: false,
         }
+        .with_debug_tab()
+    }
+
+    fn with_debug_tab(mut self) -> Self {
+        let tab = match std::env::var("AUROLO_DEBUG_TAB").unwrap_or_default().as_str() {
+            "media" => Tab::Media,
+            "system" => Tab::System,
+            "tools" => Tab::Tools,
+            "daily" => Tab::Daily,
+            "social" => Tab::Social,
+            "settings" => Tab::Settings,
+            _ => return self,
+        };
+        self.tab = tab;
+        self.mode = Mode::Expanded;
+        self.debug_hold = true;
+        self
     }
 
     pub fn open_launcher(&mut self, t: f32) {
@@ -117,6 +179,7 @@ impl Island {
 
     pub fn close(&mut self, t: f32) {
         self.launcher = false;
+        self.rem_edit = false;
         self.query.clear();
         self.set_mode(Mode::Compact, t);
     }
@@ -145,7 +208,22 @@ impl Island {
         let media = shared.media.read().clone();
         let audio = shared.audio.lock().clone();
         let pal = media.palette();
-        let was_launcher = self.launcher;
+        let was_focus = self.launcher || self.rem_edit;
+
+        // ---- reminders coming due
+        let now_unix = platform::unix_now();
+        let mut fired = false;
+        for r in self.reminders.iter_mut() {
+            if !r.done && !r.notified && r.due.map(|d| d <= now_unix).unwrap_or(false) {
+                r.notified = true;
+                fired = true;
+                shared.hud(Hud::Message("Reminder".into(), r.text.clone()));
+            }
+        }
+        if fired {
+            platform::beep();
+            self.save_reminders();
+        }
 
         // ---- timers
         if let Some(rem) = self.timer_remaining() {
@@ -195,9 +273,9 @@ impl Island {
             } else if self.leave_since.is_none() {
                 self.leave_since = Some(t);
             }
-            let typing = self.launcher && !self.query.is_empty();
+            let typing = self.launcher && !self.query.is_empty() || self.debug_hold;
             let left_long = self.leave_since.map(|l| t - l > if self.launcher { 9e9 } else { 0.55 }).unwrap_or(false);
-            let clicked_outside = input.pressed && !inside;
+            let clicked_outside = input.pressed && !inside && !self.debug_hold;
             if (left_long && !typing) || clicked_outside || input.key(Key::Esc) {
                 self.close(t);
             }
@@ -246,14 +324,12 @@ impl Island {
         // ---- draw pill
         let rect = [x, y, w, h];
         f.scene.halo_shape(Shape::rect(x, y, w, h, r, with_a(pal.primary, if media.playing { 0.10 + audio.pulse() * 0.12 } else { 0.0 })));
-        f.scene.shape(Shape::rect(x, y + 3.0, w, h, r, [0.0, 0.0, 0.0, 0.35]).soft(14.0));
-        f.scene.shape(Shape::rect(x, y, w, h, r, [0.0, 0.0, 0.0, 1.0]));
-        if self.mode == Mode::Expanded {
-            f.scene.shape(Shape::stroke(x, y, w, h, r, 1.0, [1.0, 1.0, 1.0, 0.07]));
-        }
+        let glass = cfg.island_glass;
+        draw_pill_body(f, x, y, w, h, r, glass, smooth(110.0, 380.0, h), &pal);
         let content_a = smooth(0.05, 0.22, t - self.mode_since)
             * smooth(0.6, 0.95, (w / tw).min(tw / w) * (h / th).min(th / h));
         f.scene.layer();
+        let content_layer = f.scene.layers.len() - 1;
         match self.mode {
             Mode::Compact => self.compact(f, input, shared, &media, &audio, &pal, rect, content_a.max(0.35)),
             Mode::Peek => {
@@ -267,6 +343,15 @@ impl Island {
             Mode::Expanded => {
                 if let Some(a) = self.expanded(f, input, shared, &media, &audio, &pal, rect, content_a, cfg) {
                     action = a;
+                }
+            }
+        }
+
+        // glass is see-through, so give the island's text a soft shadow for contrast
+        if glass {
+            for layer in f.scene.layers.iter_mut().skip(content_layer) {
+                for tx in layer.texts.iter_mut() {
+                    tx.shadow = 0.5;
                 }
             }
         }
@@ -293,7 +378,7 @@ impl Island {
             let d = 34.0 * bs;
             let bx = x + w + 7.0;
             let by = y + (h - d) / 2.0;
-            f.scene.shape(Shape::rect(bx, by, d, d, d / 2.0, [0.0, 0.0, 0.0, 1.0]));
+            draw_pill_body(f, bx, by, d, d, d / 2.0, glass, 0.0, &pal);
             let (cx, cy) = (bx + d / 2.0, by + d / 2.0);
             if let Some(rem) = self.timer_remaining() {
                 let p = rem / self.timer_total.max(1.0);
@@ -314,8 +399,9 @@ impl Island {
             Some([hit[0] - 4.0, hit[1] - 6.0, hit[2] + 8.0, hit[3] + 12.0])
         };
 
-        if self.launcher != was_launcher {
-            action = IslandAction::WantFocus(self.launcher);
+        let want_focus = self.launcher || self.rem_edit;
+        if want_focus != was_focus && matches!(action, IslandAction::None) {
+            action = IslandAction::WantFocus(want_focus);
         }
         action
     }
@@ -421,6 +507,10 @@ impl Island {
                 String::new()
             };
             f.scene.text(Text::new(right, x + w - 16.0, cy - 9.0, 13.5, with_a(WHITE, 0.7 * a)).right());
+        }
+        // keep-awake indicator, centred in the pill
+        if self.keep_awake {
+            f.icon('\u{E890}', x + w / 2.0, cy, 11.0, with_a(rgba(255, 204, 0, 1.0), 0.9 * a));
         }
         // privacy indicators
         let mut dx = x + w - 7.0;
@@ -608,17 +698,36 @@ impl Island {
         // tabs
         let mut tx = x + 22.0;
         let ty = y + 18.0;
-        for (tab, name) in [(Tab::Media, "Now Playing"), (Tab::System, "System"), (Tab::Tools, "Tools"), (Tab::Social, "Social")] {
+        for (tab, name) in [
+            (Tab::Media, "Now Playing"),
+            (Tab::System, "System"),
+            (Tab::Tools, "Tools"),
+            (Tab::Daily, "Daily"),
+            (Tab::Social, "Social"),
+        ] {
             let (c, bw) = f.pill(input, name, tx, ty, 30.0, self.tab == tab && !self.launcher_typing(), with_a(WHITE, a));
             if c {
                 self.tab = tab;
                 self.launcher = false;
+                self.rem_edit = false;
                 self.query.clear();
             }
             tx += bw + 6.0;
         }
         // search box
-        let sw = 230.0;
+        let sw = 196.0;
+        // settings + power shortcuts left of the search box
+        let gx = x + w - 22.0 - sw - 20.0;
+        let gear_c = if self.tab == Tab::Settings { with_a(pal.primary, a) } else { with_a(WHITE, 0.75 * a) };
+        if f.icon_button(input, ic::SETTINGS, gx, ty + 15.0, 13.0, gear_c) {
+            self.tab = Tab::Settings;
+            self.launcher = false;
+            self.rem_edit = false;
+        }
+        if f.icon_button(input, ic::POWER, gx - 32.0, ty + 15.0, 13.0, with_a(WHITE, 0.75 * a)) {
+            self.tab = Tab::Daily;
+            self.launcher = false;
+        }
         let sx = x + w - 22.0 - sw;
         let srect = [sx, ty, sw, 30.0];
         let hov = input.over(srect);
@@ -629,6 +738,7 @@ impl Island {
         f.icon(ic::SEARCH, sx + 16.0, ty + 15.0, 12.0, with_a(WHITE, 0.6 * a));
         if input.clicked(srect) {
             self.launcher = true;
+            self.rem_edit = false;
         }
         if self.launcher {
             self.caret_t += f.dt;
@@ -667,6 +777,12 @@ impl Island {
             Tab::System => self.tab_system(f, shared, pal, area, a),
             Tab::Tools => self.tab_tools(f, input, shared, pal, area, a, cfg),
             Tab::Social => self.tab_social(f, input, shared, area, a, cfg),
+            Tab::Daily => self.tab_daily(f, input, shared, pal, area, a),
+            Tab::Settings => {
+                if let Some(c) = self.tab_settings(f, input, pal, area, a, cfg) {
+                    act = Some(IslandAction::Cfg(c));
+                }
+            }
         }
         act
     }
@@ -1282,24 +1398,10 @@ fn weather_icon(f: &mut Frame, cx: f32, cy: f32, r: f32, code: i32, day: bool, a
     }
 }
 
+/// Neutral monogram for a social tile (no third-party logos).
 fn social_glyph(f: &mut Frame, name: &str, cx: f32, cy: f32, a: f32) {
-    let n = name.to_lowercase();
-    if n.contains("instagram") {
-        f.scene.shape(Shape::stroke(cx - 11.0, cy - 11.0, 22.0, 22.0, 7.0, 2.2, with_a(WHITE, a)));
-        f.scene.shape(Shape::stroke(cx - 5.0, cy - 5.0, 10.0, 10.0, 5.0, 2.2, with_a(WHITE, a)));
-        f.scene.shape(Shape::glow(cx + 6.2, cy - 6.2, 1.8, with_a(WHITE, a), 0.1));
-    } else if n.contains("whatsapp") {
-        f.scene.shape(Shape::stroke(cx - 11.0, cy - 11.0, 22.0, 22.0, 11.0, 2.2, with_a(WHITE, a)));
-        f.scene.shape(Shape::line(cx - 9.0, cy + 8.0, cx - 11.5, cy + 12.5, 2.4, with_a(WHITE, a)));
-        f.icon('\u{E717}', cx, cy, 10.0, with_a(WHITE, a));
-    } else if n.contains("discord") {
-        f.scene.shape(Shape::rect(cx - 12.0, cy - 8.0, 24.0, 17.0, 8.0, with_a(WHITE, a)));
-        f.scene.shape(Shape::glow(cx - 4.5, cy + 0.5, 2.6, with_a(rgba(88, 101, 242, 1.0), a), 0.1));
-        f.scene.shape(Shape::glow(cx + 4.5, cy + 0.5, 2.6, with_a(rgba(88, 101, 242, 1.0), a), 0.1));
-    } else {
-        let ini = name.chars().next().unwrap_or('•').to_uppercase().to_string();
-        f.scene.text(Text::new(ini, cx, cy - 12.0, 19.0, with_a(WHITE, a)).center().weight(700));
-    }
+    let ini = name.chars().next().unwrap_or('*').to_uppercase().to_string();
+    f.scene.text(Text::new(ini, cx, cy - 13.0, 20.0, with_a(WHITE, a)).center().weight(700).family(Family::Display));
 }
 
 fn event_when(ev: &Event) -> String {
@@ -1419,4 +1521,349 @@ pub fn calc(s: &str) -> Option<f64> {
 #[allow(dead_code)]
 fn _unused(_: u64) -> String {
     fmt_bytes(0)
+}
+
+/// The pill itself: solid black, or translucent glass with a sheen and bright rim.
+#[allow(clippy::too_many_arguments)]
+fn draw_pill_body(f: &mut Frame, x: f32, y: f32, w: f32, h: f32, r: f32, glass: bool, dense: f32, pal: &Palette) {
+    if !glass {
+        f.scene.shape(Shape::rect(x, y + 3.0, w, h, r, [0.0, 0.0, 0.0, 0.35]).soft(14.0));
+        f.scene.shape(Shape::rect(x, y, w, h, r, [0.0, 0.0, 0.0, 1.0]));
+        if dense > 0.5 {
+            f.scene.shape(Shape::stroke(x, y, w, h, r, 1.0, [1.0, 1.0, 1.0, 0.07]));
+        }
+        return;
+    }
+    // soft drop shadow so the glass lifts off the desktop
+    f.scene.shape(Shape::rect(x, y + 4.0, w, h, r, [0.0, 0.0, 0.0, 0.22]).soft(18.0));
+    // tinted translucent body (a little denser when expanded, for readability)
+    // glassy while just displaying; denser (more opaque) as it opens up for use
+    let body = lerp(0.52, 0.88, dense);
+    f.scene.shape(Shape::rect(x, y, w, h, r, [0.07, 0.07, 0.10, body]));
+    // faint album-colour wash
+    f.scene.shape(Shape::rect(x, y, w, h, r, with_a(pal.primary, 0.09)).grad(with_a(pal.secondary, 0.05), 0.5));
+    // top sheen
+    f.scene.shape(Shape::rect(x, y, w, h, r, with_a(WHITE, 0.11)).grad(with_a(WHITE, 0.0), std::f32::consts::FRAC_PI_2 * 0.85));
+    // bright rim, strongest at the top
+    f.scene.shape(Shape::stroke(x, y, w, h, r, 1.1, with_a(WHITE, 0.34)).grad(with_a(WHITE, 0.07), std::f32::consts::FRAC_PI_2));
+}
+
+fn fmt_dur(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs / 60) % 60;
+    if h > 0 {
+        format!("{h}h {m}m")
+    } else if m > 0 {
+        format!("{m}m")
+    } else {
+        format!("{secs}s")
+    }
+}
+
+/// "stretch in 30m" / "call mom at 18:30" / "pay rent at 6pm" -> (text, due unix time)
+fn parse_reminder(input: &str) -> (String, Option<i64>) {
+    let s = input.trim();
+    let low = s.to_lowercase();
+    let now = platform::unix_now();
+    if let Some(i) = low.rfind(" in ") {
+        let spec = low[i + 4..].trim().replace(' ', "");
+        let num: String = spec.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        let unit = &spec[num.len()..];
+        if let Ok(n) = num.parse::<f64>() {
+            let secs = match unit {
+                "s" | "sec" | "secs" | "seconds" => Some(n),
+                "m" | "min" | "mins" | "minute" | "minutes" | "" => Some(n * 60.0),
+                "h" | "hr" | "hrs" | "hour" | "hours" => Some(n * 3600.0),
+                _ => None,
+            };
+            if let Some(secs) = secs {
+                return (s[..i].trim().to_string(), Some(now + secs as i64));
+            }
+        }
+    }
+    if let Some(i) = low.rfind(" at ") {
+        let spec = low[i + 4..].trim().replace(' ', "");
+        let (pm, am) = (spec.ends_with("pm"), spec.ends_with("am"));
+        let core = spec.trim_end_matches("pm").trim_end_matches("am");
+        let (hh, mm) = match core.split_once(':') {
+            Some((a, b)) => (a.parse::<i64>().ok(), b.parse::<i64>().ok()),
+            None => (core.parse::<i64>().ok(), Some(0)),
+        };
+        if let (Some(mut hh), Some(mm)) = (hh, mm) {
+            if pm && hh < 12 {
+                hh += 12;
+            }
+            if am && hh == 12 {
+                hh = 0;
+            }
+            if (0..24).contains(&hh) && (0..60).contains(&mm) {
+                let lt = platform::local_time();
+                let since_midnight = lt.hour as i64 * 3600 + lt.minute as i64 * 60 + lt.second as i64;
+                let midnight = now - since_midnight;
+                let mut due = midnight + hh * 3600 + mm * 60;
+                if due <= now {
+                    due += 86400;
+                }
+                return (s[..i].trim().to_string(), Some(due));
+            }
+        }
+    }
+    (s.to_string(), None)
+}
+
+fn due_label(due: i64) -> String {
+    let now = platform::unix_now();
+    let d = due - now;
+    if d <= 0 {
+        return "due".into();
+    }
+    if d < 3600 {
+        return format!("in {}m", (d + 59) / 60);
+    }
+    let off = platform::utc_offset_secs();
+    let local = due + off;
+    let hh = local.rem_euclid(86400) / 3600;
+    let mm = local.rem_euclid(3600) / 60;
+    let days = local.div_euclid(86400) - (now + off).div_euclid(86400);
+    if days == 0 { format!("{hh}:{mm:02}") } else { format!("tmrw {hh}:{mm:02}") }
+}
+
+impl Island {
+    fn save_reminders(&self) {
+        if let Ok(s) = serde_json::to_string_pretty(&self.reminders) {
+            let _ = std::fs::write(reminders_path(), s);
+        }
+    }
+
+    pub fn set_keep_awake(&mut self, on: bool) {
+        self.keep_awake = on;
+        platform::keep_awake(on);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn tab_daily(&mut self, f: &mut Frame, input: &Input, shared: &Shared, pal: &Palette, area: [f32; 4], a: f32) {
+        let [x, y, w, h] = area;
+        let gap = 12.0;
+        let rw = w * 0.42;
+        let uw = w * 0.30;
+        let pw = w - rw - uw - gap * 2.0;
+        let card = |f: &mut Frame, cx: f32, cw: f32, title: &str, g: char| {
+            f.scene.shape(Shape::rect(cx, y, cw, h, 20.0, [1.0, 1.0, 1.0, 0.055 * a]));
+            f.icon(g, cx + 22.0, y + 22.0, 12.0, with_a(WHITE, 0.55 * a));
+            f.scene.text(Text::new(title, cx + 38.0, y + 13.0, 12.5, with_a(WHITE, 0.7 * a)).weight(600));
+        };
+
+        // ---------------- Reminders
+        card(f, x, rw, "Reminders", ic::BELL);
+        let open_n = self.reminders.iter().filter(|r| !r.done).count();
+        if open_n > 0 {
+            f.scene.text(Text::new(format!("{open_n} open"), x + rw - 16.0, y + 13.0, 11.5, with_a(WHITE, 0.45 * a)).right());
+        }
+        let fr = [x + 12.0, y + 40.0, rw - 24.0, 32.0];
+        let hov = input.over(fr);
+        let fa = if self.rem_edit { 0.13 } else if hov { 0.1 } else { 0.07 };
+        f.scene.shape(Shape::rect(fr[0], fr[1], fr[2], fr[3], 12.0, [1.0, 1.0, 1.0, fa * a]));
+        if self.rem_edit {
+            f.scene.shape(Shape::stroke(fr[0], fr[1], fr[2], fr[3], 12.0, 1.0, with_a(pal.primary, 0.7 * a)));
+        }
+        if input.clicked(fr) {
+            self.rem_edit = true;
+            self.launcher = false;
+        }
+        if self.rem_edit {
+            self.caret_t += f.dt;
+            for c in input.text.chars() {
+                if !c.is_control() {
+                    self.rem_input.push(c);
+                    self.caret_t = 0.0;
+                }
+            }
+            if input.key(Key::Back) {
+                self.rem_input.pop();
+            }
+            if input.key(Key::Enter) && !self.rem_input.trim().is_empty() {
+                let (text, due) = parse_reminder(&self.rem_input);
+                self.reminders.insert(0, Reminder { text, due, done: false, notified: false });
+                self.reminders.truncate(40);
+                self.rem_input.clear();
+                self.save_reminders();
+            }
+        }
+        let (shown, sa) = if self.rem_input.is_empty() {
+            ("Add… e.g. \u{201C}stretch in 30m\u{201D}, \u{201C}call mom at 6pm\u{201D}".to_string(), 0.4)
+        } else {
+            (self.rem_input.clone(), 0.95)
+        };
+        let t = f.fit(Text::new(shown, fr[0] + 12.0, fr[1] + 8.0, 12.5, with_a(WHITE, sa * a)), fr[2] - 24.0);
+        let tw = if self.rem_input.is_empty() { 0.0 } else { f.measure(&t).0 };
+        f.scene.text(t);
+        if self.rem_edit && (self.caret_t * 2.0) as i32 % 2 == 0 {
+            f.scene.shape(Shape::rect(fr[0] + 12.0 + tw + 1.0, fr[1] + 8.0, 1.5, 16.0, 0.7, with_a(WHITE, 0.9 * a)));
+        }
+        let mut toggle = None;
+        let mut delete = None;
+        let now = platform::unix_now();
+        for (k, r) in self.reminders.iter().take(5).enumerate() {
+            let ry = y + 82.0 + k as f32 * 34.0;
+            let row = [x + 10.0, ry, rw - 20.0, 30.0];
+            let rh = input.over(row);
+            if rh {
+                f.scene.shape(Shape::rect(row[0], row[1], row[2], row[3], 10.0, [1.0, 1.0, 1.0, 0.06 * a]));
+            }
+            let (cx, cy) = (row[0] + 16.0, ry + 15.0);
+            let cb = [cx - 10.0, cy - 10.0, 20.0, 20.0];
+            if r.done {
+                f.scene.shape(Shape::rect(cx - 8.0, cy - 8.0, 16.0, 16.0, 8.0, with_a(pal.primary, a)));
+                f.icon('\u{E73E}', cx, cy, 9.0, with_a(BLACK, a));
+            } else {
+                f.scene.shape(Shape::stroke(cx - 8.0, cy - 8.0, 16.0, 16.0, 8.0, 1.5, with_a(WHITE, 0.6 * a)));
+            }
+            let due = r.due.map(due_label).unwrap_or_default();
+            let overdue = !r.done && r.due.map(|d| d <= now).unwrap_or(false);
+            let ta = if r.done { 0.4 } else { 0.92 };
+            let tt = f.fit(Text::new(r.text.clone(), row[0] + 34.0, ry + 7.0, 12.5, with_a(WHITE, ta * a)), row[2] - 100.0);
+            f.scene.text(tt);
+            if !due.is_empty() {
+                let dc = if overdue { rgba(255, 69, 58, a) } else { with_a(WHITE, 0.5 * a) };
+                f.scene.text(Text::new(due, row[0] + row[2] - 8.0, ry + 8.0, 11.0, dc).right());
+            }
+            if input.clicked(cb) {
+                toggle = Some(k);
+            }
+            if rh && input.right_pressed {
+                delete = Some(k);
+            }
+        }
+        if let Some(k) = toggle {
+            self.reminders[k].done = !self.reminders[k].done;
+            self.save_reminders();
+        }
+        if let Some(k) = delete {
+            self.reminders.remove(k);
+            self.save_reminders();
+        }
+        if self.reminders.is_empty() {
+            f.scene.text(Text::new("Nothing to remember yet", x + rw / 2.0, y + h / 2.0 + 20.0, 12.0, with_a(WHITE, 0.35 * a)).center());
+        } else {
+            f.scene.text(
+                Text::new("click circle = done \u{B7} right-click = delete", x + rw / 2.0, y + h - 20.0, 10.0, with_a(WHITE, 0.32 * a))
+                    .center(),
+            );
+        }
+
+        // ---------------- Screen time
+        let ux = x + rw + gap;
+        card(f, ux, uw, "Screen time", ic::TIMER);
+        let (usage, total) = {
+            let m = shared.misc.read();
+            (m.usage.clone(), m.usage_total)
+        };
+        f.scene.text(Text::new(fmt_dur(total), ux + 18.0, y + 40.0, 28.0, with_a(WHITE, a)).weight(600).family(Family::Display));
+        f.scene.text(Text::new("today, active use", ux + 18.0, y + 76.0, 11.0, with_a(WHITE, 0.45 * a)));
+        let top = usage.first().map(|u| u.1).unwrap_or(1).max(1) as f32;
+        for (k, (name, secs)) in usage.iter().take(5).enumerate() {
+            let ry = y + 100.0 + k as f32 * 30.0;
+            let nt = f.fit(Text::new(name.clone(), ux + 18.0, ry, 12.0, with_a(WHITE, 0.85 * a)), uw * 0.55);
+            f.scene.text(nt);
+            f.scene.text(Text::new(fmt_dur(*secs), ux + uw - 16.0, ry, 11.5, with_a(WHITE, 0.55 * a)).right());
+            let bw = (uw - 34.0) * (*secs as f32 / top);
+            let c = mix(pal.primary, pal.secondary, k as f32 / 4.0);
+            f.scene.shape(Shape::rect(ux + 18.0, ry + 18.0, bw.max(3.0), 3.0, 1.5, with_a(c, 0.9 * a)));
+        }
+
+        // ---------------- Keep awake + power
+        let px = ux + uw + gap;
+        card(f, px, pw, "Keep awake", '\u{E890}');
+        let kr = [px + 14.0, y + 42.0, pw - 28.0, 46.0];
+        let on = self.keep_awake;
+        let kc = rgba(255, 204, 0, 1.0);
+        let kh = input.over(kr);
+        let kbg = if on { with_a(kc, 0.9 * a) } else { [1.0, 1.0, 1.0, if kh { 0.12 } else { 0.07 } * a] };
+        f.scene.shape(Shape::rect(kr[0], kr[1], kr[2], kr[3], 16.0, kbg));
+        let ktc = if on { with_a(BLACK, a) } else { with_a(WHITE, 0.85 * a) };
+        f.icon('\u{E890}', kr[0] + 24.0, kr[1] + 23.0, 15.0, ktc);
+        f.scene.text(Text::new(if on { "Awake: on" } else { "Awake: off" }, kr[0] + 46.0, kr[1] + 7.0, 13.5, ktc).weight(650));
+        f.scene.text(Text::new(if on { "won't sleep" } else { "normal sleep" }, kr[0] + 46.0, kr[1] + 25.0, 10.5, with_a(ktc, 0.7 * ktc[3])));
+        if input.clicked(kr) {
+            self.set_keep_awake(!on);
+        }
+
+        f.icon(ic::POWER, px + 22.0, y + 112.0, 12.0, with_a(WHITE, 0.55 * a));
+        f.scene.text(Text::new("Power", px + 38.0, y + 103.0, 12.5, with_a(WHITE, 0.7 * a)).weight(600));
+        let labels: [(&str, char, u8); 4] =
+            [("Lock", '\u{E72E}', 0), ("Sleep", ic::MOON, 1), ("Restart", '\u{E777}', 2), ("Shut down", ic::POWER, 3)];
+        let bw = (pw - 28.0 - 8.0) / 2.0;
+        if let Some((_, t0)) = self.power_confirm {
+            if f.t - t0 > 3.0 {
+                self.power_confirm = None;
+            }
+        }
+        for (k, (label, g, id)) in labels.iter().enumerate() {
+            let bx = px + 14.0 + (k % 2) as f32 * (bw + 8.0);
+            let by = y + 128.0 + (k / 2) as f32 * 52.0;
+            let br = [bx, by, bw, 44.0];
+            let confirming = self.power_confirm.map(|(i, _)| i == *id).unwrap_or(false);
+            let hv = input.over(br);
+            let danger = rgba(255, 69, 58, 1.0);
+            let bg = if confirming { with_a(danger, 0.85 * a) } else { [1.0, 1.0, 1.0, if hv { 0.12 } else { 0.07 } * a] };
+            f.scene.shape(Shape::rect(bx, by, bw, 44.0, 14.0, bg));
+            f.icon(*g, bx + bw / 2.0, by + 15.0, 12.0, with_a(WHITE, 0.9 * a));
+            let lt = if confirming { "Click again" } else { label };
+            f.scene.text(Text::new(lt, bx + bw / 2.0, by + 25.0, 10.5, with_a(WHITE, 0.85 * a)).center());
+            if input.clicked(br) {
+                if *id == 0 {
+                    platform::lock_pc();
+                } else if confirming {
+                    self.power_confirm = None;
+                    match id {
+                        1 => platform::sleep_pc(),
+                        2 => platform::restart_pc(),
+                        _ => platform::shutdown_pc(),
+                    }
+                } else {
+                    self.power_confirm = Some((*id, f.t));
+                }
+            }
+        }
+    }
+
+    fn tab_settings(&mut self, f: &mut Frame, input: &Input, pal: &Palette, area: [f32; 4], a: f32, cfg: &Config) -> Option<CfgChange> {
+        let [x, y, w, _h] = area;
+        let onoff = |b: bool| if b { "On" } else { "Off" };
+        let rows: [(&str, String, CfgChange, bool); 9] = [
+            ("Glass island", onoff(cfg.island_glass).into(), CfgChange::IslandGlass, cfg.island_glass),
+            ("Lyrics widget", onoff(cfg.lyrics_widget).into(), CfgChange::Widget, cfg.lyrics_widget),
+            ("Widget layout", if cfg.widget_lyrics_only { "Lyrics only" } else { "Full" }.into(), CfgChange::WidgetLayout, false),
+            ("Widget background", cfg.widget_background.name().into(), CfgChange::WidgetBg, false),
+            ("Widget lyric style", cfg.widget_style.name().into(), CfgChange::WidgetStyle, false),
+            ("Fullscreen lyric style", cfg.fullscreen_style.name().into(), CfgChange::FsStyle, false),
+            ("Edge glow", onoff(cfg.edge_glow).into(), CfgChange::Edge, cfg.edge_glow),
+            ("Start with Windows", onoff(cfg.autostart).into(), CfgChange::Autostart, cfg.autostart),
+            ("All settings (file)", "Open".into(), CfgChange::OpenFile, false),
+        ];
+        let cols = 2;
+        let cw = (w - 12.0) / cols as f32;
+        let rh = 54.0;
+        let mut out = None;
+        for (k, (label, value, change, active)) in rows.iter().enumerate() {
+            let cx = x + (k % cols) as f32 * (cw + 12.0);
+            let ry = y + (k / cols) as f32 * (rh + 8.0);
+            let r = [cx, ry, cw, rh];
+            let hv = input.over(r);
+            f.scene.shape(Shape::rect(cx, ry, cw, rh, 16.0, [1.0, 1.0, 1.0, if hv { 0.09 } else { 0.055 } * a]));
+            f.scene.text(Text::new(*label, cx + 18.0, ry + 17.0, 13.5, with_a(WHITE, 0.9 * a)).weight(600));
+            let vt = Text::new(value.clone(), 0.0, 0.0, 12.0, WHITE).weight(600);
+            let vw = f.measure(&vt).0 + 24.0;
+            let px = cx + cw - 14.0 - vw;
+            let py = ry + (rh - 28.0) / 2.0;
+            let bg = if *active { with_a(pal.primary, 0.9 * a) } else { [1.0, 1.0, 1.0, 0.1 * a] };
+            f.scene.shape(Shape::rect(px, py, vw, 28.0, 14.0, bg));
+            let tc = if *active { with_a(BLACK, a) } else { with_a(WHITE, 0.9 * a) };
+            f.scene.text(Text { x: px + vw / 2.0, y: py + 6.0, color: tc, ..vt }.center());
+            if input.clicked(r) {
+                out = Some(*change);
+            }
+        }
+        out
+    }
 }

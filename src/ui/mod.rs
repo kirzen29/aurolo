@@ -51,7 +51,7 @@ pub mod ic {
     pub const MINUS: char = '\u{E738}';
     pub const STOP: char = '\u{E71A}';
     pub const BELL: char = '\u{EA8F}';
-    pub const POWER: char = '\u{E945}';
+    pub const POWER: char = '\u{E7E8}';
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

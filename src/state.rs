@@ -244,6 +244,9 @@ pub struct Misc {
     pub notif_access: Option<bool>,
     pub bt_devices: Vec<BtDevice>,
     pub apps: Vec<(String, String)>, // (name, path) for the launcher
+    /// Today's screen time per app (seconds), sorted descending.
+    pub usage: Vec<(String, u64)>,
+    pub usage_total: u64,
 }
 
 #[derive(Debug, Clone)]
