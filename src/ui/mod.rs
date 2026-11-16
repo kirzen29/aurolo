@@ -1,5 +1,6 @@
 //! Immediate-mode UI helpers shared by all overlay windows.
 
+pub mod dock;
 pub mod edge;
 pub mod fullscreen;
 pub mod island;

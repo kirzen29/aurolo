@@ -19,7 +19,9 @@ use winit::window::{Fullscreen as WFullscreen, Window, WindowId, WindowLevel};
 use crate::config::{Config, LyricStyle, WidgetBg};
 use crate::gfx::{Gpu, Painter, Scene};
 use crate::platform;
+use crate::shell as platform_shell;
 use crate::state::Shared;
+use crate::ui::dock::{Dock, DockAction};
 use crate::ui::edge::EdgeGlow;
 use crate::ui::fullscreen::{FsAction, Fullscreen};
 use crate::ui::island::{Island, IslandAction};
@@ -120,6 +122,9 @@ pub struct App {
     widget: Option<(Win, Widget)>,
     fs: Option<(Win, Fullscreen)>,
     edge: Option<(Win, EdgeGlow)>,
+    dock: Option<(Win, Dock)>,
+    /// Physical rect of the strip the dock occupies (and reserves, as an appbar).
+    dock_rc: Option<windows::Win32::Foundation::RECT>,
     backdrop: Option<Win>,
     tray: Option<TrayIcon>,
     menu: Option<MenuIds>,
@@ -139,6 +144,7 @@ struct MenuIds {
     sizes: Vec<(CheckMenuItem, usize)>,
     bgs: Vec<(CheckMenuItem, WidgetBg)>,
     edge: CheckMenuItem,
+    dock: CheckMenuItem,
     fullscreen: MenuItem,
     wstyles: Vec<(CheckMenuItem, LyricStyle)>,
     fstyles: Vec<(CheckMenuItem, LyricStyle)>,
@@ -162,6 +168,8 @@ impl App {
             widget: None,
             fs: None,
             edge: None,
+            dock: None,
+            dock_rc: None,
             backdrop: None,
             tray: None,
             menu: None,
@@ -235,6 +243,84 @@ impl App {
         w.set_overlay(true);
         w.set_through(true);
         self.edge = Some((w, EdgeGlow::new()));
+    }
+
+    fn create_dock(&mut self, el: &ActiveEventLoop) {
+        let (mp, ms, sc) = self.mon_rect();
+        let h = ((crate::ui::dock::DOCK_H + crate::ui::dock::TIP_H) as f64 * sc).round() as i32;
+        let attrs = Self::overlay_attrs("Aurolo Dock")
+            .with_inner_size(PhysicalSize::new(ms.width, h as u32))
+            .with_position(PhysicalPosition::new(mp.x, mp.y + ms.height as i32 - h));
+        let win = Arc::new(el.create_window(attrs).expect("dock window"));
+        let mut w = Win::new(self.gpu.as_ref().unwrap(), win);
+        w.set_overlay(true);
+        w.set_through(true);
+        if self.cfg.dock_reserve {
+            platform_shell::appbar_register(w.hwnd);
+        }
+        self.dock = Some((w, Dock::new()));
+        self.dock_rc = None;
+        self.place_dock();
+    }
+
+    fn destroy_dock(&mut self) {
+        if let Some((w, _)) = self.dock.take() {
+            platform_shell::appbar_remove(w.hwnd);
+        }
+        self.dock_rc = None;
+    }
+
+    /// Fit the dock to the bottom of its monitor (above the Windows taskbar when that is
+    /// visible) and, if enabled, reserve the strip so maximized windows stop above it.
+    fn place_dock(&mut self) {
+        let (mp, ms, _) = self.mon_rect();
+        let Some((w, _)) = &self.dock else { return };
+        let sc = w.painter.scale as f64;
+        let bar = (crate::ui::dock::DOCK_H as f64 * sc).round() as i32;
+        let tip = (crate::ui::dock::TIP_H as f64 * sc).round() as i32;
+        let (mon, work) = platform_shell::monitor_rects(mp.x + ms.width as i32 / 2, mp.y + ms.height as i32 / 2);
+        let rc = if self.cfg.dock_reserve {
+            let q = platform_shell::appbar_place(w.hwnd, mon, bar, false);
+            if self.dock_rc != Some(q) { platform_shell::appbar_place(w.hwnd, mon, bar, true) } else { q }
+        } else {
+            windows::Win32::Foundation::RECT { left: work.left, right: work.right, top: work.bottom - bar, bottom: work.bottom }
+        };
+        if self.dock_rc == Some(rc) {
+            return;
+        }
+        self.dock_rc = Some(rc);
+        let win = &w.painter.window;
+        let _ = win.request_inner_size(PhysicalSize::new((rc.right - rc.left) as u32, (bar + tip) as u32));
+        win.set_outer_position(PhysicalPosition::new(rc.left, rc.bottom - bar - tip));
+    }
+
+    fn set_dock(&mut self, el: &ActiveEventLoop, on: bool) {
+        self.cfg.dock = on;
+        self.cfg.save();
+        if on && self.dock.is_none() {
+            self.create_dock(el);
+        } else if !on {
+            self.destroy_dock();
+        }
+        if let Some(m) = &self.menu {
+            m.dock.set_checked(on);
+        }
+    }
+
+    fn toggle_launcher(&mut self) {
+        let t = self.t0.elapsed().as_secs_f32();
+        if let Some((w, isl)) = &mut self.island {
+            if isl.launcher {
+                isl.close(t);
+                w.set_overlay(true);
+            } else {
+                isl.open_launcher(t);
+                w.set_overlay(false);
+                w.set_through(false);
+                w.painter.window.focus_window();
+                platform::force_foreground(w.hwnd);
+            }
+        }
     }
 
     fn open_fullscreen(&mut self, el: &ActiveEventLoop) {
@@ -333,6 +419,10 @@ impl App {
                     m.edge.set_checked(self.cfg.edge_glow);
                 }
             }
+            C::Dock => {
+                let on = !self.cfg.dock;
+                self.set_dock(el, on);
+            }
             C::Autostart => {
                 self.cfg.autostart = !self.cfg.autostart;
                 platform::set_autostart(self.cfg.autostart);
@@ -416,6 +506,7 @@ impl App {
         let island = CheckMenuItem::new("Dynamic Island", true, self.cfg.island, None);
         let widget = CheckMenuItem::new("Lyrics widget", true, self.cfg.lyrics_widget, None);
         let edge = CheckMenuItem::new("Edge glow", true, self.cfg.edge_glow, None);
+        let dock = CheckMenuItem::new("Taskbar dock", true, self.cfg.dock, None);
         let lyrics_only = CheckMenuItem::new("Widget: lyrics only", true, self.cfg.widget_lyrics_only, None);
         let bgsub = Submenu::new("Widget background", true);
         let mut bgs = vec![];
@@ -458,6 +549,7 @@ impl App {
             &island,
             &widget,
             &edge,
+            &dock,
             &PredefinedMenuItem::separator(),
             &lyrics_only,
             &sizesub,
@@ -478,7 +570,7 @@ impl App {
             .with_icon(icon)
             .build()
             .ok();
-        self.menu = Some(MenuIds { island, widget, lyrics_only, sizes, bgs, edge, fullscreen, wstyles, fstyles, earlier, later, reset, autostart, config, quit });
+        self.menu = Some(MenuIds { island, widget, lyrics_only, sizes, bgs, edge, dock, fullscreen, wstyles, fstyles, earlier, later, reset, autostart, config, quit });
     }
 
     /// Registers any hotkey not yet owned. Called at startup and retried every few
@@ -521,19 +613,7 @@ impl App {
                     self.open_fullscreen(el);
                 }
             } else if ev.id == self.hk_island {
-                let t = self.t0.elapsed().as_secs_f32();
-                if let Some((w, isl)) = &mut self.island {
-                    if isl.launcher {
-                        isl.close(t);
-                        w.set_overlay(true);
-                    } else {
-                        isl.open_launcher(t);
-                        w.set_overlay(false);
-                        w.set_through(false);
-                        w.painter.window.focus_window();
-                        platform::force_foreground(w.hwnd);
-                    }
-                }
+                self.toggle_launcher();
             }
         }
         while let Ok(ev) = MenuEvent::receiver().try_recv() {
@@ -541,6 +621,7 @@ impl App {
             let id = ev.id;
             if id == *m.quit.id() {
                 self.save_widget_pos();
+                self.destroy_dock();
                 el.exit();
                 return;
             } else if id == *m.island.id() {
@@ -576,6 +657,9 @@ impl App {
                 } else {
                     self.edge = None;
                 }
+            } else if id == *m.dock.id() {
+                let on = m.dock.is_checked();
+                self.set_dock(el, on);
             } else if id == *m.fullscreen.id() {
                 self.open_fullscreen(el);
             } else if id == *m.earlier.id() {
@@ -737,6 +821,37 @@ impl App {
             return;
         }
 
+        if let Some((w, dk)) = self.dock.as_mut().filter(|(w, _)| w.id() == id) {
+            let dt = w.last.elapsed().as_secs_f32();
+            w.last = Instant::now();
+            w.poll_mouse();
+            let (lw, lh) = w.painter.logical_size();
+            let mut f = Frame { gpu, painter: &mut w.painter, scene: Scene::new(), w: lw, h: lh, t, dt };
+            let action = dk.draw(&mut f, &w.input, &shared, &self.cfg.dock_pins, self.cfg.pomodoro_minutes);
+            let scene = std::mem::take(&mut f.scene);
+            w.painter.render(gpu, &scene, t);
+            let over = w.input.mouse.map(|p| dk.hits.iter().any(|r| crate::ui::hit(*r, p))).unwrap_or(false);
+            w.set_through(!over);
+            w.input.end_frame();
+            match action {
+                DockAction::Launcher => self.toggle_launcher(),
+                DockAction::Lyrics => self.open_fullscreen(el),
+                DockAction::TogglePin(exe) => {
+                    let name = exe.rsplit('\\').next().unwrap_or(&exe).trim_end_matches(".exe").to_string();
+                    if let Some(i) = self.cfg.dock_pins.iter().position(|p| p.eq_ignore_ascii_case(&exe)) {
+                        self.cfg.dock_pins.remove(i);
+                        self.shared.hud(crate::state::Hud::Message("Unpinned from dock".into(), name));
+                    } else {
+                        self.cfg.dock_pins.push(exe);
+                        self.shared.hud(crate::state::Hud::Message("Pinned to dock".into(), name));
+                    }
+                    self.cfg.save();
+                }
+                DockAction::None => {}
+            }
+            return;
+        }
+
         if let Some(w) = self.backdrop.as_mut().filter(|w| w.id() == id) {
             let (lw, lh) = w.painter.logical_size();
             let mut f = Frame { gpu, painter: &mut w.painter, scene: Scene::new(), w: lw, h: lh, t, dt: 0.016 };
@@ -773,6 +888,9 @@ impl App {
             return Some(w);
         }
         if let Some((w, _)) = self.edge.as_mut().filter(|(w, _)| w.id() == id) {
+            return Some(w);
+        }
+        if let Some((w, _)) = self.dock.as_mut().filter(|(w, _)| w.id() == id) {
             return Some(w);
         }
         if let Some(w) = self.backdrop.as_mut().filter(|w| w.id() == id) {
@@ -815,6 +933,9 @@ impl ApplicationHandler for App {
         }
         if self.cfg.edge_glow {
             self.create_edge(el);
+        }
+        if self.cfg.dock {
+            self.create_dock(el);
         }
         if self.cfg.lyrics_widget {
             self.create_widget(el);
@@ -931,7 +1052,13 @@ impl ApplicationHandler for App {
             if self.hk_island == 0 || self.hk_lyrics == 0 {
                 self.register_hotkeys();
             }
-            for w in [self.island.as_ref().map(|x| &x.0), self.widget.as_ref().map(|x| &x.0), self.edge.as_ref().map(|x| &x.0)]
+            self.place_dock();
+            for w in [
+                self.island.as_ref().map(|x| &x.0),
+                self.widget.as_ref().map(|x| &x.0),
+                self.edge.as_ref().map(|x| &x.0),
+                self.dock.as_ref().map(|x| &x.0),
+            ]
                 .into_iter()
                 .flatten()
             {
@@ -948,6 +1075,9 @@ impl ApplicationHandler for App {
         // visibility rules
         let hide_for_fs = self.fullscreen_app;
         if let Some((w, _)) = &mut self.widget {
+            w.set_visible(!hide_for_fs);
+        }
+        if let Some((w, _)) = &mut self.dock {
             w.set_visible(!hide_for_fs);
         }
         if let Some((w, _)) = &mut self.edge {
@@ -993,6 +1123,21 @@ impl ApplicationHandler for App {
         }
         if let Some((w, _)) = &mut self.fs {
             schedule(w, fast);
+        }
+        if let Some((w, dk)) = &mut self.dock {
+            let near = {
+                let (_, cy) = platform::cursor_pos();
+                let pos = w.painter.window.inner_position().unwrap_or_default();
+                cy >= pos.y
+            };
+            let iv = if dk.busy || near {
+                fast
+            } else if playing {
+                Duration::from_millis(33)
+            } else {
+                Duration::from_millis(500)
+            };
+            schedule(w, iv);
         }
         if let Some((w, _)) = &mut self.edge {
             schedule(w, fast);

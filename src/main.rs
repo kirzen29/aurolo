@@ -8,6 +8,7 @@ mod demo;
 mod gfx;
 mod platform;
 mod services;
+mod shell;
 mod state;
 mod ui;
 

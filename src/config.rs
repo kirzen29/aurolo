@@ -69,6 +69,12 @@ pub struct Config {
     pub island: bool,
     pub lyrics_widget: bool,
     pub edge_glow: bool,
+    /// Floating taskbar-style dock along the bottom of the screen.
+    pub dock: bool,
+    /// Reserve the dock's strip so maximized windows stop above it.
+    pub dock_reserve: bool,
+    /// Executables pinned to the dock (right-click an app on the dock to pin / unpin).
+    pub dock_pins: Vec<String>,
     pub widget_style: LyricStyle,
     pub fullscreen_style: LyricStyle,
     /// Font family used for lyrics ("" = Segoe UI Variable Display).
@@ -100,6 +106,9 @@ impl Default for Config {
             island: true,
             lyrics_widget: true,
             edge_glow: true,
+            dock: false,
+            dock_reserve: true,
+            dock_pins: vec![r"c:\windows\explorer.exe".into()],
             widget_style: LyricStyle::Karaoke,
             fullscreen_style: LyricStyle::Constellation,
             lyrics_font: String::new(),

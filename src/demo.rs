@@ -5,7 +5,7 @@
 //! writes to the user's settings or reminders.
 //!
 //! Optional: `AUROLO_DEMO_LAYOUT=full|lyrics`, `AUROLO_DEMO_BG=glass|solid|none`,
-//! `AUROLO_DEMO_FULLSCREEN=1`, `AUROLO_DEBUG_TAB=media|system|tools|daily|social|settings`.
+//! `AUROLO_DEMO_FULLSCREEN=1`, `AUROLO_DEMO_DOCK=1`, `AUROLO_DEBUG_TAB=media|system|tools|daily|social|settings`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -34,6 +34,7 @@ pub fn want_fullscreen() -> bool {
 pub fn apply_cfg(cfg: &mut Config) {
     cfg.island = true;
     cfg.lyrics_widget = true;
+    cfg.dock = std::env::var("AUROLO_DEMO_DOCK").is_ok();
     cfg.widget_pos = None;
     cfg.widget_lyrics_only = std::env::var("AUROLO_DEMO_LAYOUT").map(|v| v == "lyrics").unwrap_or(false);
     cfg.widget_background = match std::env::var("AUROLO_DEMO_BG").unwrap_or_default().as_str() {

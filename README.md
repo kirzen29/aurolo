@@ -54,6 +54,14 @@ Press `Ctrl+Alt+L`.
 ### Edge glow
 A gentle rim of light around your screen in the album's colours, pulsing to the beat. It's click-through and shows only while music plays.
 
+### Taskbar dock
+A floating glass bar along the bottom of the screen, tinted by the album colours. Turn it on from the tray menu or the island's Settings tab.
+- **Left:** a search orb that opens the launcher, then your pinned and open apps with their real icons. The app you're using expands to show its window title.
+- **Middle:** now playing (art, title, equalizer, controls). Click the art for fullscreen lyrics. With nothing playing, it shows your next calendar event.
+- **Right:** a one-click focus timer, CPU and RAM rings (click for Task Manager), weather, Wi-Fi, volume and battery (click for quick settings), and the clock (click for notifications and calendar).
+- Click an app to switch to it, click again to minimize (or to cycle its windows), and right-click to pin or unpin it. Hover for its window title.
+- Maximized windows stop above the dock. For a cleaner look, set the Windows taskbar to auto-hide (Settings → Personalization → Taskbar → Taskbar behaviors).
+
 ---
 
 ## Download (easiest)
@@ -122,6 +130,9 @@ Most options are in the island's **Settings** tab (gear icon) and the tray menu.
 | `lyrics_offset_ms` | Default lyric timing nudge |
 | `socials` | The social tiles: name, link to open, and which notification app to count |
 | `edge_thickness`, `edge_intensity`, `edge_only_when_playing` | Tune the edge glow |
+| `dock_pins` | Apps pinned to the taskbar dock (full `.exe` paths) |
+| `dock_reserve` | `false` lets maximized windows go under the dock instead of stopping above it |
+| `pomodoro_minutes` | Length of the dock's and island's focus timer |
 
 Restart Aurolo after editing the file by hand.
 
@@ -166,7 +177,8 @@ Screen time, reminders and clipboard history never leave your PC.
 ## For developers
 - `src/gfx`: the wgpu renderer. It draws per-pixel transparent windows through DirectComposition, with SDF shapes, text (glyphon) and bloom.
 - `src/services`: background threads for media (Windows media controls), lyrics, audio loopback and FFT, system stats, notifications, weather, calendar and screen time.
-- `src/ui`: the island, widget, fullscreen lyrics and edge glow.
+- `src/ui`: the island, widget, fullscreen lyrics, edge glow and taskbar dock.
+- `src/shell.rs`: open windows, app icons and the appbar that reserves the dock's strip.
 - **Demo mode** (for screenshots): `$env:AUROLO_DEMO=1` uses sample data, draws a wallpaper backdrop and never writes your settings. Add `$env:AUROLO_DEBUG_TAB="daily"` to hold the island open on a tab.
 
 ## Credits
