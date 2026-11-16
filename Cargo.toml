@@ -1,0 +1,76 @@
+[package]
+name = "aurolo"
+version = "0.1.0"
+edition = "2024"
+description = "Dynamic Island, synced lyrics and ambient edge glow for Windows"
+
+[dependencies]
+wgpu = "30"
+glyphon = "0.12"
+winit = "0.30"
+pollster = "1"
+bytemuck = { version = "1", features = ["derive"] }
+tray-icon = "0.26"
+global-hotkey = "0.10"
+sysinfo = "0.40"
+ureq = { version = "3", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+rustfft = "6"
+parking_lot = "0.12"
+raw-window-handle = "0.6"
+windows-collections = "0.3"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+  "Foundation",
+  "Foundation_Collections",
+  "Media_Control",
+  "Storage_Streams",
+  "Networking_Connectivity",
+  "Devices_Enumeration",
+  "UI_Notifications",
+  "UI_Notifications_Management",
+  "ApplicationModel",
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Gdi",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Shell",
+  "Win32_UI_Controls",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_System_Power",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Variant",
+  "Win32_System_DataExchange",
+  "Win32_System_Memory",
+  "Win32_System_Ole",
+  "Win32_System_Registry",
+  "Win32_System_Threading",
+  "Win32_System_Performance",
+  "Win32_System_Wmi",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_SystemInformation",
+  "Win32_Media_Audio",
+  "Win32_Media_Audio_Endpoints",
+  "Win32_Media_KernelStreaming",
+  "Win32_Media_Multimedia",
+  "Win32_Devices_FunctionDiscovery",
+  "Win32_UI_Shell_PropertiesSystem",
+]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
