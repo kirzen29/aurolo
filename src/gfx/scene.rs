@@ -197,6 +197,10 @@ impl Text {
         self.line_height = l;
         self
     }
+    pub fn shadow_a(mut self, a: f32) -> Self {
+        self.shadow = a;
+        self
+    }
 }
 
 #[derive(Clone, Debug)]

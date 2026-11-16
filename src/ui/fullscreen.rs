@@ -43,6 +43,9 @@ impl Fullscreen {
 
         self.view.draw(f, [0.0, 0.0, w, h], &ly, &media, &pal, &audio, pos, true);
         f.scene.layer();
+        if self.view.style == crate::config::LyricStyle::Constellation {
+            star_clock(f, &media, &pal, &audio);
+        }
 
         // keyboard
         if input.key(Key::Esc) {
@@ -171,5 +174,69 @@ impl Fullscreen {
             }
         }
         action
+    }
+}
+
+/// Top-left corner for the Constellation view: a thin glowing clock tinted with the album's
+/// colours, a tiny twinkling constellation underneath, the date, and where the music is
+/// playing from (with a dot that pulses on the beat).
+fn star_clock(f: &mut Frame, media: &MediaState, pal: &Palette, audio: &AudioState) {
+    let lt = crate::platform::local_time();
+    let pulse = audio.pulse();
+    let (x, y) = (48.0, 34.0);
+    let tint = mix(pal.light, WHITE, 0.35);
+
+    let time = Text::new(format!("{:02}:{:02}", lt.hour, lt.minute), x, y, 66.0, with_a(tint, 0.95))
+        .family(Family::Display)
+        .weight(250)
+        .lh(1.1);
+    let (tw, _) = f.measure(&time);
+    f.scene.halo_text(Text { color: with_a(pal.primary, 0.45 + 0.25 * pulse), ..time.clone() });
+    f.scene.text(time);
+
+    // a little constellation tracing under the clock
+    let sy = y + 82.0;
+    let n = 5;
+    let pts: Vec<(f32, f32)> = (0..n)
+        .map(|k| {
+            let fx = x + 4.0 + (tw - 8.0) * k as f32 / (n - 1) as f32;
+            let fy = sy + if k % 2 == 0 { 0.0 } else { -7.0 } + (k as f32 * 1.7).sin() * 3.0;
+            (fx, fy)
+        })
+        .collect();
+    for k in 1..n {
+        let (a, b) = (pts[k - 1], pts[k]);
+        let mut l = Shape::line(a.0, a.1, b.0, b.1, 1.0, with_a(pal.primary, 0.55));
+        l.c1 = with_a(pal.secondary, 0.55);
+        f.scene.glow_shape(l);
+    }
+    for (k, p) in pts.iter().enumerate() {
+        let tw_ = 0.6 + 0.4 * (f.t * 1.7 + k as f32 * 1.3).sin();
+        let r = 2.2 + if k == n / 2 { 1.2 * pulse } else { 0.0 };
+        f.scene.glow_shape(Shape::glow(p.0, p.1, r * 2.0, with_a(mix(tint, WHITE, 0.5), 0.9 * tw_), 0.8));
+    }
+
+    // date
+    let date = format!(
+        "{} \u{B7} {} {}",
+        crate::platform::WEEKDAYS[lt.weekday as usize % 7],
+        lt.day,
+        crate::platform::MONTHS[(lt.month as usize + 11) % 12]
+    );
+    f.scene.text(Text::new(date, x + 2.0, sy + 16.0, 15.0, with_a(tint, 0.62)).weight(500).shadow_a(0.4));
+
+    // playing from …
+    if media.active {
+        let src = crate::ui::source_name(&media.app);
+        let py = sy + 46.0;
+        let dot = with_a(pal.primary, 0.9);
+        let r = 4.0 + 1.6 * pulse;
+        f.scene.halo_shape(Shape::glow(x + 7.0, py + 9.0, 12.0, with_a(pal.primary, 0.5 + 0.4 * pulse), 1.2));
+        f.scene.shape(Shape::rect(x + 7.0 - r, py + 9.0 - r, r * 2.0, r * 2.0, r, dot));
+        let label = if media.playing { "Playing from" } else { "Paused on" };
+        let t1 = Text::new(label, x + 22.0, py, 13.5, with_a(tint, 0.55)).shadow_a(0.4);
+        let (lw, _) = f.measure(&t1);
+        f.scene.text(t1);
+        f.scene.text(Text::new(src, x + 22.0 + lw + 6.0, py, 13.5, with_a(tint, 0.95)).weight(650).shadow_a(0.4));
     }
 }

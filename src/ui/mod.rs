@@ -266,3 +266,44 @@ pub fn fmt_bytes(b: u64) -> String {
         format!("{:.0} KB", b / 1024.0)
     }
 }
+
+/// Friendly name for the app that is playing, from its Windows media session id
+/// (e.g. "Spotify.exe", "Chrome", "AppleInc.AppleMusicWin_...!App").
+pub fn source_name(app: &str) -> String {
+    let l = app.to_lowercase();
+    let known = [
+        ("spotify", "Spotify"),
+        ("applemusic", "Apple Music"),
+        ("zunemusic", "Media Player"),
+        ("msedge", "Microsoft Edge"),
+        ("chrome", "Google Chrome"),
+        ("firefox", "Firefox"),
+        ("308046b0af4a39cb", "Firefox"),
+        ("operagx", "Opera GX"),
+        ("opera", "Opera"),
+        ("brave", "Brave"),
+        ("vivaldi", "Vivaldi"),
+        ("arc", "Arc"),
+        ("youtube", "YouTube Music"),
+        ("tidal", "TIDAL"),
+        ("deezer", "Deezer"),
+        ("amazon", "Amazon Music"),
+        ("soundcloud", "SoundCloud"),
+        ("vlc", "VLC"),
+        ("foobar", "foobar2000"),
+        ("musicbee", "MusicBee"),
+        ("aimp", "AIMP"),
+        ("discord", "Discord"),
+    ];
+    for (k, name) in known {
+        if l.contains(k) {
+            return name.to_string();
+        }
+    }
+    // fallback: tidy up the id ("Some.App_xyz!App" -> "App", "player.exe" -> "player")
+    let base = app.split('!').next().unwrap_or(app);
+    let base = base.trim_end_matches(".exe").trim_end_matches(".EXE");
+    let base = base.split('_').next().unwrap_or(base);
+    let base = base.rsplit(['.', '\\', '/']).next().unwrap_or(base);
+    if base.is_empty() { "your player".to_string() } else { base.to_string() }
+}
