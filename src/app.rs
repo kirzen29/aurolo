@@ -827,7 +827,15 @@ impl App {
             w.poll_mouse();
             let (lw, lh) = w.painter.logical_size();
             let mut f = Frame { gpu, painter: &mut w.painter, scene: Scene::new(), w: lw, h: lh, t, dt };
-            let action = dk.draw(&mut f, &w.input, &shared, &self.cfg.dock_pins, self.cfg.pomodoro_minutes);
+            let action = dk.draw(
+                &mut f,
+                &w.input,
+                &shared,
+                &self.cfg.dock_pins,
+                &self.cfg.dock_hidden,
+                self.cfg.pomodoro_minutes,
+                &self.cfg.wallpaper_dir,
+            );
             let scene = std::mem::take(&mut f.scene);
             w.painter.render(gpu, &scene, t);
             let over = w.input.mouse.map(|p| dk.hits.iter().any(|r| crate::ui::hit(*r, p))).unwrap_or(false);
@@ -835,15 +843,24 @@ impl App {
             w.input.end_frame();
             match action {
                 DockAction::Launcher => self.toggle_launcher(),
-                DockAction::Lyrics => self.open_fullscreen(el),
-                DockAction::TogglePin(exe) => {
-                    let name = exe.rsplit('\\').next().unwrap_or(&exe).trim_end_matches(".exe").to_string();
-                    if let Some(i) = self.cfg.dock_pins.iter().position(|p| p.eq_ignore_ascii_case(&exe)) {
-                        self.cfg.dock_pins.remove(i);
-                        self.shared.hud(crate::state::Hud::Message("Unpinned from dock".into(), name));
-                    } else {
-                        self.cfg.dock_pins.push(exe);
-                        self.shared.hud(crate::state::Hud::Message("Pinned to dock".into(), name));
+                DockAction::Pins(op) => {
+                    use crate::ui::dock::PinOp;
+                    let short = |s: &str| s.rsplit('\\').next().unwrap_or(s).trim_end_matches(".exe").trim_end_matches(".lnk").to_string();
+                    match op {
+                        PinOp::Pin(exe) => {
+                            if !self.cfg.dock_pins.iter().any(|p| p.eq_ignore_ascii_case(&exe)) {
+                                self.shared.hud(crate::state::Hud::Message("Pinned to dock".into(), short(&exe)));
+                                self.cfg.dock_pins.push(exe);
+                            }
+                        }
+                        PinOp::Unpin(exe) => {
+                            self.cfg.dock_pins.retain(|p| !p.eq_ignore_ascii_case(&exe));
+                            self.shared.hud(crate::state::Hud::Message("Unpinned from dock".into(), short(&exe)));
+                        }
+                        PinOp::Hide(key) => {
+                            self.shared.hud(crate::state::Hud::Message("Hidden from dock".into(), short(&key)));
+                            self.cfg.dock_hidden.push(key);
+                        }
                     }
                     self.cfg.save();
                 }
@@ -1128,9 +1145,9 @@ impl ApplicationHandler for App {
             let near = {
                 let (_, cy) = platform::cursor_pos();
                 let pos = w.painter.window.inner_position().unwrap_or_default();
-                cy >= pos.y
+                cy >= pos.y + (crate::ui::dock::TIP_H * w.painter.scale) as i32
             };
-            let iv = if dk.busy || near {
+            let iv = if dk.busy || near || dk.popup_open() {
                 fast
             } else if playing {
                 Duration::from_millis(33)

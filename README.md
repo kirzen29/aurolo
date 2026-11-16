@@ -55,11 +55,12 @@ Press `Ctrl+Alt+L`.
 A gentle rim of light around your screen in the album's colours, pulsing to the beat. It's click-through and shows only while music plays.
 
 ### Taskbar dock
-A floating glass bar along the bottom of the screen, tinted by the album colours. Turn it on from the tray menu or the island's Settings tab.
-- **Left:** a search orb that opens the launcher, then your pinned and open apps with their real icons. The app you're using expands to show its window title.
-- **Middle:** now playing (art, title, equalizer, controls). Click the art for fullscreen lyrics. With nothing playing, it shows your next calendar event.
-- **Right:** a one-click focus timer, CPU and RAM rings (click for Task Manager), weather, Wi-Fi, volume and battery (click for quick settings), and the clock (click for notifications and calendar).
-- Click an app to switch to it, click again to minimize (or to cycle its windows), and right-click to pin or unpin it. Hover for its window title.
+A floating glass bar along the bottom of the screen, tinted by the album colours. Turn it on from the tray menu or the island's Settings tab. Music stays on the island at the top.
+- **Middle:** Start, search (the island launcher) and Task View, then every app pinned to your Windows taskbar, in the same order, plus any other open apps. Each app shows its real icon, running dots and notification badges. The app you're using expands to show its window title.
+- **Left:** weather, CPU and RAM rings (click for Task Manager), a one-click focus timer and the wallpaper dial.
+- **Right:** Wi-Fi, volume (scroll to change it) and battery (click for quick settings), the clock (click for notifications and calendar) and a show-desktop strip.
+- Click an app to switch to it, click again to minimize (or to cycle its windows). Right-click for all its windows (switch to or close each one), a new window, close all, and pin or hide options.
+- **Wallpaper dial:** click the dial button or scroll over it to flip through the images in `Pictures\Wallpapers` (or the `wallpaper_dir` setting). The wallpaper changes once the dial stops.
 - Maximized windows stop above the dock. For a cleaner look, set the Windows taskbar to auto-hide (Settings → Personalization → Taskbar → Taskbar behaviors).
 
 ---
@@ -130,7 +131,9 @@ Most options are in the island's **Settings** tab (gear icon) and the tray menu.
 | `lyrics_offset_ms` | Default lyric timing nudge |
 | `socials` | The social tiles: name, link to open, and which notification app to count |
 | `edge_thickness`, `edge_intensity`, `edge_only_when_playing` | Tune the edge glow |
-| `dock_pins` | Apps pinned to the taskbar dock (full `.exe` paths) |
+| `dock_pins` | Extra apps pinned only to the dock (full `.exe` paths); your Windows taskbar pins appear automatically |
+| `dock_hidden` | Windows taskbar pins you hid from the dock |
+| `wallpaper_dir` | Folder for the wallpaper dial (default `Pictures\Wallpapers`) |
 | `dock_reserve` | `false` lets maximized windows go under the dock instead of stopping above it |
 | `pomodoro_minutes` | Length of the dock's and island's focus timer |
 
@@ -179,6 +182,7 @@ Screen time, reminders and clipboard history never leave your PC.
 - `src/services`: background threads for media (Windows media controls), lyrics, audio loopback and FFT, system stats, notifications, weather, calendar and screen time.
 - `src/ui`: the island, widget, fullscreen lyrics, edge glow and taskbar dock.
 - `src/shell.rs`: open windows, app icons and the appbar that reserves the dock's strip.
+- `src/desktop.rs`: Windows taskbar pins, Start / Task View / show desktop, volume and wallpapers.
 - **Demo mode** (for screenshots): `$env:AUROLO_DEMO=1` uses sample data, draws a wallpaper backdrop and never writes your settings. Add `$env:AUROLO_DEBUG_TAB="daily"` to hold the island open on a tab.
 
 ## Credits

@@ -75,6 +75,10 @@ pub struct Config {
     pub dock_reserve: bool,
     /// Executables pinned to the dock (right-click an app on the dock to pin / unpin).
     pub dock_pins: Vec<String>,
+    /// Windows taskbar pins hidden from the dock.
+    pub dock_hidden: Vec<String>,
+    /// Folder for the dock's wallpaper dial ("" = Pictures\Wallpapers).
+    pub wallpaper_dir: String,
     pub widget_style: LyricStyle,
     pub fullscreen_style: LyricStyle,
     /// Font family used for lyrics ("" = Segoe UI Variable Display).
@@ -108,7 +112,9 @@ impl Default for Config {
             edge_glow: true,
             dock: false,
             dock_reserve: true,
-            dock_pins: vec![r"c:\windows\explorer.exe".into()],
+            dock_pins: vec![],
+            dock_hidden: vec![],
+            wallpaper_dir: String::new(),
             widget_style: LyricStyle::Karaoke,
             fullscreen_style: LyricStyle::Constellation,
             lyrics_font: String::new(),

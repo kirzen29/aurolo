@@ -5,7 +5,7 @@
 //! writes to the user's settings or reminders.
 //!
 //! Optional: `AUROLO_DEMO_LAYOUT=full|lyrics`, `AUROLO_DEMO_BG=glass|solid|none`,
-//! `AUROLO_DEMO_FULLSCREEN=1`, `AUROLO_DEMO_DOCK=1`, `AUROLO_DEBUG_TAB=media|system|tools|daily|social|settings`.
+//! `AUROLO_DEMO_FULLSCREEN=1`, `AUROLO_DEMO_DOCK=1` (+ `AUROLO_DEMO_DOCK_DIAL=1` / `AUROLO_DEMO_DOCK_MENU=1`), `AUROLO_DEBUG_TAB=media|system|tools|daily|social|settings`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;

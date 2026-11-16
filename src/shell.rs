@@ -144,6 +144,13 @@ pub fn minimize_window(h: isize) {
     }
 }
 
+/// Ask a window to close, as if its X button was clicked.
+pub fn close_window(h: isize) {
+    unsafe {
+        let _ = PostMessageW(Some(HWND(h as *mut _)), WM_CLOSE, WPARAM(0), LPARAM(0));
+    }
+}
+
 
 /// Convert an HICON into straight RGBA pixels.
 fn icon_to_rgba(hicon: HICON) -> Option<(u32, u32, Vec<u8>)> {
