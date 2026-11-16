@@ -13,7 +13,7 @@ Aurolo sits on top of your desktop as one small native app: a pill at the top of
 ## Features
 
 ### The island
-A pill at the top-centre of the screen. Hover for a quick peek, click to open the full panel.
+A pill at the top-centre of the screen. Hover for a quick peek, click to open the full panel. While it sits in the background it's translucent glass, so you can see through it. When you pull it open it turns mostly opaque, so everything is easy to read.
 
 | Now Playing | System |
 |---|---|
@@ -29,7 +29,7 @@ A pill at the top-centre of the screen. Hover for a quick peek, click to open th
 - **Daily:** reminders in plain English ("stretch in 30m", "call mom at 6pm"), screen time per app, keep awake, and lock/sleep/restart/shut down (restart and shut down ask for a second click).
 - **Social:** quick links to your Discord, Instagram and WhatsApp messages, with unread counts from Windows notifications.
 - **Launcher:** press `Ctrl+Alt+Space` and type to open apps, search the web, do maths (`12*7`, then Enter copies the answer) or run a command (`>notepad`).
-- **Settings:** quick toggles right inside the island, including a glass look.
+- **Settings:** quick toggles right inside the island.
 
 ### Lyrics widget
 A floating card you can drag anywhere and resize from its corner.

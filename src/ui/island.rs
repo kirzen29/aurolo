@@ -37,7 +37,6 @@ enum Tab {
 /// A settings change requested from the island's Settings tab (applied by the app).
 #[derive(Clone, Copy, Debug)]
 pub enum CfgChange {
-    IslandGlass,
     Widget,
     WidgetLayout,
     WidgetBg,
@@ -338,7 +337,8 @@ impl Island {
         // ---- draw pill
         let rect = [x, y, w, h];
         f.scene.halo_shape(Shape::rect(x, y, w, h, r, with_a(pal.primary, if media.playing { 0.10 + audio.pulse() * 0.12 } else { 0.0 })));
-        let glass = cfg.island_glass;
+        // always glass: see-through in the background, mostly opaque when pulled open
+        let glass = true;
         draw_pill_body(f, x, y, w, h, r, glass, smooth(110.0, 380.0, h), &pal);
         let content_a = smooth(0.05, 0.22, t - self.mode_since)
             * smooth(0.6, 0.95, (w / tw).min(tw / w) * (h / th).min(th / h));
@@ -1568,7 +1568,7 @@ fn draw_pill_body(f: &mut Frame, x: f32, y: f32, w: f32, h: f32, r: f32, glass: 
     f.scene.shape(Shape::rect(x, y + 4.0, w, h, r, [0.0, 0.0, 0.0, 0.22]).soft(18.0));
     // tinted translucent body (a little denser when expanded, for readability)
     // glassy while just displaying; denser (more opaque) as it opens up for use
-    let body = lerp(0.52, 0.88, dense);
+    let body = lerp(0.42, 0.94, dense);
     f.scene.shape(Shape::rect(x, y, w, h, r, [0.07, 0.07, 0.10, body]));
     // faint album-colour wash
     f.scene.shape(Shape::rect(x, y, w, h, r, with_a(pal.primary, 0.09)).grad(with_a(pal.secondary, 0.05), 0.5));
@@ -1863,8 +1863,7 @@ impl Island {
     fn tab_settings(&mut self, f: &mut Frame, input: &Input, pal: &Palette, area: [f32; 4], a: f32, cfg: &Config) -> Option<CfgChange> {
         let [x, y, w, _h] = area;
         let onoff = |b: bool| if b { "On" } else { "Off" };
-        let rows: [(&str, String, CfgChange, bool); 9] = [
-            ("Glass island", onoff(cfg.island_glass).into(), CfgChange::IslandGlass, cfg.island_glass),
+        let rows: [(&str, String, CfgChange, bool); 8] = [
             ("Lyrics widget", onoff(cfg.lyrics_widget).into(), CfgChange::Widget, cfg.lyrics_widget),
             ("Widget layout", if cfg.widget_lyrics_only { "Lyrics only" } else { "Full" }.into(), CfgChange::WidgetLayout, false),
             ("Widget background", cfg.widget_background.name().into(), CfgChange::WidgetBg, false),

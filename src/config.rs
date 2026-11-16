@@ -60,8 +60,6 @@ pub struct Social {
 #[serde(default)]
 pub struct Config {
     pub island: bool,
-    /// Translucent glass island (true) or solid black pill (false).
-    pub island_glass: bool,
     pub lyrics_widget: bool,
     pub edge_glow: bool,
     pub widget_style: LyricStyle,
@@ -93,7 +91,6 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             island: true,
-            island_glass: false,
             lyrics_widget: true,
             edge_glow: true,
             widget_style: LyricStyle::Karaoke,

@@ -33,7 +33,6 @@ pub fn want_fullscreen() -> bool {
 
 pub fn apply_cfg(cfg: &mut Config) {
     cfg.island = true;
-    cfg.island_glass = false;
     cfg.lyrics_widget = true;
     cfg.widget_pos = None;
     cfg.widget_lyrics_only = std::env::var("AUROLO_DEMO_LAYOUT").map(|v| v == "lyrics").unwrap_or(false);

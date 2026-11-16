@@ -271,10 +271,6 @@ impl App {
     fn apply_cfg(&mut self, el: &ActiveEventLoop, c: crate::ui::island::CfgChange) {
         use crate::ui::island::CfgChange as C;
         match c {
-            C::IslandGlass => {
-                self.cfg.island_glass = !self.cfg.island_glass;
-                self.cfg.save();
-            }
             C::Widget => {
                 let on = !self.cfg.lyrics_widget;
                 self.toggle_widget(el, on);
