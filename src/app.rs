@@ -103,6 +103,7 @@ pub struct App {
     widget: Option<(Win, Widget)>,
     fs: Option<(Win, Fullscreen)>,
     edge: Option<(Win, EdgeGlow)>,
+    backdrop: Option<Win>,
     tray: Option<TrayIcon>,
     menu: Option<MenuIds>,
     hotkeys: Option<GlobalHotKeyManager>,
@@ -143,6 +144,7 @@ impl App {
             widget: None,
             fs: None,
             edge: None,
+            backdrop: None,
             tray: None,
             menu: None,
             hotkeys: None,
@@ -687,6 +689,15 @@ impl App {
             return;
         }
 
+        if let Some(w) = self.backdrop.as_mut().filter(|w| w.id() == id) {
+            let (lw, lh) = w.painter.logical_size();
+            let mut f = Frame { gpu, painter: &mut w.painter, scene: Scene::new(), w: lw, h: lh, t, dt: 0.016 };
+            crate::demo::draw_backdrop(&mut f);
+            let scene = std::mem::take(&mut f.scene);
+            w.painter.render(gpu, &scene, t);
+            return;
+        }
+
         if let Some((w, eg)) = self.edge.as_mut().filter(|(w, _)| w.id() == id) {
             let dt = w.last.elapsed().as_secs_f32();
             w.last = Instant::now();
@@ -714,6 +725,9 @@ impl App {
         if let Some((w, _)) = self.edge.as_mut().filter(|(w, _)| w.id() == id) {
             return Some(w);
         }
+        if let Some(w) = self.backdrop.as_mut().filter(|w| w.id() == id) {
+            return Some(w);
+        }
         None
     }
 }
@@ -732,6 +746,23 @@ impl ApplicationHandler for App {
             }
         }
         self.monitor = el.primary_monitor().or_else(|| el.available_monitors().next());
+        if crate::demo::is_demo() {
+            let (mp, ms, _) = self.mon_rect();
+            let attrs = Window::default_attributes()
+                .with_title("Aurolo demo backdrop")
+                .with_decorations(false)
+                .with_no_redirection_bitmap(true)
+                .with_skip_taskbar(true)
+                .with_inner_size(ms)
+                .with_position(mp);
+            if let Ok(win) = el.create_window(attrs) {
+                let win = Arc::new(win);
+                win.focus_window();
+                let w = Win::new(self.gpu.as_ref().unwrap(), win);
+                platform::force_foreground(w.hwnd);
+                self.backdrop = Some(w);
+            }
+        }
         if self.cfg.edge_glow {
             self.create_edge(el);
         }
@@ -743,6 +774,9 @@ impl ApplicationHandler for App {
         }
         self.build_tray();
         self.register_hotkeys();
+        if crate::demo::want_fullscreen() {
+            self.open_fullscreen(el);
+        }
         if self.cfg.autostart {
             platform::set_autostart(true);
         }
@@ -912,6 +946,9 @@ impl ApplicationHandler for App {
         }
         if let Some((w, _)) = &mut self.edge {
             schedule(w, fast);
+        }
+        if let Some(w) = &mut self.backdrop {
+            schedule(w, Duration::from_millis(500));
         }
         el.set_control_flow(ControlFlow::WaitUntil(next_wake));
     }

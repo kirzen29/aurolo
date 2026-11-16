@@ -195,6 +195,12 @@ pub fn foreground_is_fullscreen() -> bool {
         if fg.0.is_null() {
             return false;
         }
+        // our own windows (e.g. fullscreen lyrics) never count as "another app is fullscreen"
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        if pid == windows::Win32::System::Threading::GetCurrentProcessId() {
+            return false;
+        }
         let shell = GetShellWindow();
         let desk = GetDesktopWindow();
         if fg == shell || fg == desk {

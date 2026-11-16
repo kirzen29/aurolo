@@ -177,6 +177,9 @@ impl Config {
         }
     }
     pub fn save(&self) {
+        if crate::demo::is_demo() {
+            return; // demo mode never touches the user's settings
+        }
         if let Ok(s) = toml::to_string_pretty(self) {
             let _ = std::fs::write(config_path(), s);
         }

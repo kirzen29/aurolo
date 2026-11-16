@@ -56,6 +56,16 @@ struct Reminder {
     notified: bool,
 }
 
+fn demo_reminders() -> Vec<Reminder> {
+    let now = platform::unix_now();
+    vec![
+        Reminder { text: "Stretch + water".into(), due: Some(now + 25 * 60), done: false, notified: false },
+        Reminder { text: "Send the mix to Sam".into(), due: Some(now + 3 * 3600), done: false, notified: false },
+        Reminder { text: "Book studio time".into(), due: None, done: false, notified: false },
+        Reminder { text: "Water the plants".into(), due: None, done: true, notified: true },
+    ]
+}
+
 fn reminders_path() -> std::path::PathBuf {
     crate::config::data_dir().join("reminders.json")
 }
@@ -142,10 +152,14 @@ impl Island {
             widget_style_name: "",
             caret_t: 0.0,
             keep_awake: false,
-            reminders: std::fs::read_to_string(reminders_path())
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default(),
+            reminders: if crate::demo::is_demo() {
+                demo_reminders()
+            } else {
+                std::fs::read_to_string(reminders_path())
+                    .ok()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_default()
+            },
             rem_input: String::new(),
             rem_edit: false,
             power_confirm: None,
@@ -1646,6 +1660,9 @@ fn due_label(due: i64) -> String {
 
 impl Island {
     fn save_reminders(&self) {
+        if crate::demo::is_demo() {
+            return;
+        }
         if let Ok(s) = serde_json::to_string_pretty(&self.reminders) {
             let _ = std::fs::write(reminders_path(), s);
         }

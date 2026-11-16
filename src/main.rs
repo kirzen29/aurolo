@@ -4,6 +4,7 @@
 mod anim;
 mod app;
 mod config;
+mod demo;
 mod gfx;
 mod platform;
 mod services;
@@ -33,16 +34,25 @@ fn main() {
     if !single_instance() {
         return;
     }
-    let cfg = config::Config::load();
+    let demo = demo::init();
+    let mut cfg = config::Config::load();
+    if demo {
+        demo::apply_cfg(&mut cfg);
+    }
     let shared = state::Shared::new();
 
     let lyrics_tx = services::lyrics::spawn(shared.clone());
     services::media::spawn(shared.clone(), lyrics_tx);
     services::audio::spawn(shared.clone());
     services::sysmon::spawn(shared.clone(), cfg.lhm_url.clone());
-    services::system::spawn(shared.clone());
-    services::usage::spawn(shared.clone());
-    services::web::spawn(shared.clone(), cfg.weather_city.clone(), cfg.calendar_ics_url.clone());
+    if demo {
+        // sample data instead of the user's notifications, Wi-Fi, app usage, clipboard
+        demo::seed(&shared);
+    } else {
+        services::system::spawn(shared.clone());
+        services::usage::spawn(shared.clone());
+        services::web::spawn(shared.clone(), cfg.weather_city.clone(), cfg.calendar_ics_url.clone());
+    }
 
     let el = EventLoop::new().expect("event loop");
     let mut app = app::App::new(shared, cfg);
