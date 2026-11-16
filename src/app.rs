@@ -34,6 +34,9 @@ struct Win {
     next: Instant,
     visible: bool,
     through: bool,
+    /// Desired "overlay" style (tool window, optionally no-activate). Re-applied whenever
+    /// winit rewrites the window styles (it does on every show/hide).
+    overlay: Option<bool>,
     prev_down: bool,
     cursor_resize: bool,
 }
@@ -49,6 +52,7 @@ impl Win {
             next: Instant::now(),
             visible: true,
             through: false,
+            overlay: None,
             prev_down: false,
             cursor_resize: false,
         }
@@ -60,13 +64,26 @@ impl Win {
         if self.visible != v {
             self.visible = v;
             self.painter.window.set_visible(v);
+            // winit rebuilds the extended window style on show/hide, dropping our
+            // click-through / no-activate / tool-window bits: put them back.
+            self.reapply_styles();
         }
     }
+    /// Make the window ignore (or receive) the mouse. Checks the real window style every
+    /// call, so it also repairs styles that something else overwrote.
     fn set_through(&mut self, t: bool) {
-        if self.through != t {
-            self.through = t;
-            platform::set_click_through(self.hwnd, t);
+        self.through = t;
+        platform::set_click_through(self.hwnd, t);
+    }
+    fn set_overlay(&mut self, no_activate: bool) {
+        self.overlay = Some(no_activate);
+        platform::set_overlay_style(self.hwnd, no_activate);
+    }
+    fn reapply_styles(&self) {
+        if let Some(na) = self.overlay {
+            platform::set_overlay_style(self.hwnd, na);
         }
+        platform::set_click_through(self.hwnd, self.through);
     }
     /// Poll global mouse state into window-relative logical input.
     fn poll_mouse(&mut self) {
@@ -186,7 +203,7 @@ impl App {
             .with_position(PhysicalPosition::new(x, mp.y));
         let win = Arc::new(el.create_window(attrs).expect("island window"));
         let mut w = Win::new(self.gpu.as_ref().unwrap(), win);
-        platform::set_overlay_style(w.hwnd, true);
+        w.set_overlay(true);
         w.set_through(true);
         let mut isl = Island::new();
         isl.lyrics_widget_on = self.cfg.lyrics_widget;
@@ -205,8 +222,8 @@ impl App {
             .with_inner_size(LogicalSize::new(lw, lh))
             .with_position(pos);
         let win = Arc::new(el.create_window(attrs).expect("widget window"));
-        let w = Win::new(self.gpu.as_ref().unwrap(), win);
-        platform::set_overlay_style(w.hwnd, true);
+        let mut w = Win::new(self.gpu.as_ref().unwrap(), win);
+        w.set_overlay(true);
         self.widget = Some((w, Widget::new(self.cfg.widget_style, self.cfg.widget_lyrics_only, self.cfg.widget_background)));
     }
 
@@ -215,7 +232,7 @@ impl App {
         let attrs = Self::overlay_attrs("Aurolo Edge").with_inner_size(ms).with_position(mp);
         let win = Arc::new(el.create_window(attrs).expect("edge window"));
         let mut w = Win::new(self.gpu.as_ref().unwrap(), win);
-        platform::set_overlay_style(w.hwnd, true);
+        w.set_overlay(true);
         w.set_through(true);
         self.edge = Some((w, EdgeGlow::new()));
     }
@@ -508,10 +525,10 @@ impl App {
                 if let Some((w, isl)) = &mut self.island {
                     if isl.launcher {
                         isl.close(t);
-                        platform::set_overlay_style(w.hwnd, true);
+                        w.set_overlay(true);
                     } else {
                         isl.open_launcher(t);
-                        platform::set_overlay_style(w.hwnd, false);
+                        w.set_overlay(false);
                         w.set_through(false);
                         w.painter.window.focus_window();
                         platform::force_foreground(w.hwnd);
@@ -632,7 +649,7 @@ impl App {
                 IslandAction::Fullscreen => self.open_fullscreen(el),
                 IslandAction::WantFocus(on) => {
                     if let Some((w, _)) = &mut self.island {
-                        platform::set_overlay_style(w.hwnd, !on);
+                        w.set_overlay(!on);
                         if on {
                             w.set_through(false);
                             w.painter.window.focus_window();
@@ -737,6 +754,8 @@ impl App {
             let alive = eg.draw(&mut f, &shared, self.cfg.edge_thickness, self.cfg.edge_intensity, self.cfg.edge_only_when_playing);
             let scene = std::mem::take(&mut f.scene);
             w.painter.render(gpu, &scene, t);
+            // never let the fullscreen glow catch clicks or focus
+            w.reapply_styles();
             if !alive {
                 w.set_visible(false);
             }
@@ -832,7 +851,7 @@ impl ApplicationHandler for App {
                 if let Some((w, isl)) = self.island.as_mut().filter(|(w, _)| w.id() == id) {
                     if isl.launcher {
                         isl.close(t);
-                        platform::set_overlay_style(w.hwnd, true);
+                        w.set_overlay(true);
                     }
                 }
             }
