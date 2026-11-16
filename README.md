@@ -61,7 +61,8 @@ A floating glass bar along the bottom of the screen, tinted by the album colours
 - **Right:** Wi-Fi, volume (scroll to change it) and battery (click for quick settings), the clock (click for notifications and calendar) and a show-desktop strip.
 - Click an app to switch to it, click again to minimize (or to cycle its windows). Right-click for all its windows (switch to or close each one), a new window, close all, and pin or hide options.
 - **Wallpaper dial:** click the dial button or scroll over it to flip through the images in `Pictures\Wallpapers` (or the `wallpaper_dir` setting). The wallpaper changes once the dial stops.
-- Maximized windows stop above the dock. For a cleaner look, set the Windows taskbar to auto-hide (Settings → Personalization → Taskbar → Taskbar behaviors).
+- Maximized windows stop above the dock.
+- **Hide Windows taskbar** (tray menu or the island's Settings tab) hides the Windows taskbar while the dock is running, so only the dock shows. Turn it off, or quit Aurolo, to get the Windows taskbar back. If Aurolo is force-closed (for example from Task Manager), start it again and turn the setting off, or restart Windows Explorer.
 
 ---
 
@@ -96,6 +97,12 @@ cargo build --release
 ```
 
 The first build downloads dependencies and takes a few minutes. After that, `target\release\aurolo.exe` is a single standalone file. Copy it anywhere you like.
+
+To install it so **Aurolo** shows up in Windows search and the Start menu, run this from the repo folder (run it again after updating):
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+```
+It builds Aurolo, copies it to `%LOCALAPPDATA%\Programs\Aurolo`, adds a Start menu shortcut and starts it.
 
 Aurolo runs in the background with an icon in the system tray. Right-click the tray icon for options, including **Start with Windows**.
 
@@ -132,6 +139,7 @@ Most options are in the island's **Settings** tab (gear icon) and the tray menu.
 | `socials` | The social tiles: name, link to open, and which notification app to count |
 | `edge_thickness`, `edge_intensity`, `edge_only_when_playing` | Tune the edge glow |
 | `dock_pins` | Extra apps pinned only to the dock (full `.exe` paths); your Windows taskbar pins appear automatically |
+| `hide_windows_taskbar` | Hide the Windows taskbar while the dock runs |
 | `dock_hidden` | Windows taskbar pins you hid from the dock |
 | `wallpaper_dir` | Folder for the wallpaper dial (default `Pictures\Wallpapers`) |
 | `dock_reserve` | `false` lets maximized windows go under the dock instead of stopping above it |

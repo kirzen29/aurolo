@@ -32,6 +32,8 @@ fn single_instance() -> bool {
 fn main() {
     std::panic::set_hook(Box::new(|info| {
         gfx::log(&format!("panic: {info}"));
+        // never leave the user without a taskbar
+        desktop::set_windows_taskbar_visible(true);
     }));
     if !single_instance() {
         return;

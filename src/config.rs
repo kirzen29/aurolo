@@ -75,6 +75,8 @@ pub struct Config {
     pub dock_reserve: bool,
     /// Executables pinned to the dock (right-click an app on the dock to pin / unpin).
     pub dock_pins: Vec<String>,
+    /// Hide the Windows taskbar while the dock is running (restored when Aurolo quits).
+    pub hide_windows_taskbar: bool,
     /// Windows taskbar pins hidden from the dock.
     pub dock_hidden: Vec<String>,
     /// Folder for the dock's wallpaper dial ("" = Pictures\Wallpapers).
@@ -113,6 +115,7 @@ impl Default for Config {
             dock: false,
             dock_reserve: true,
             dock_pins: vec![],
+            hide_windows_taskbar: false,
             dock_hidden: vec![],
             wallpaper_dir: String::new(),
             widget_style: LyricStyle::Karaoke,

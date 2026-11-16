@@ -125,6 +125,9 @@ pub struct App {
     dock: Option<(Win, Dock)>,
     /// Physical rect of the strip the dock occupies (and reserves, as an appbar).
     dock_rc: Option<windows::Win32::Foundation::RECT>,
+    /// We hid the Windows taskbar (so we know to bring it back).
+    taskbar_hidden: bool,
+    last_taskbar_sync: Instant,
     backdrop: Option<Win>,
     tray: Option<TrayIcon>,
     menu: Option<MenuIds>,
@@ -145,6 +148,7 @@ struct MenuIds {
     bgs: Vec<(CheckMenuItem, WidgetBg)>,
     edge: CheckMenuItem,
     dock: CheckMenuItem,
+    win_taskbar: CheckMenuItem,
     fullscreen: MenuItem,
     wstyles: Vec<(CheckMenuItem, LyricStyle)>,
     fstyles: Vec<(CheckMenuItem, LyricStyle)>,
@@ -170,6 +174,8 @@ impl App {
             edge: None,
             dock: None,
             dock_rc: None,
+            taskbar_hidden: false,
+            last_taskbar_sync: Instant::now(),
             backdrop: None,
             tray: None,
             menu: None,
@@ -305,6 +311,25 @@ impl App {
         if let Some(m) = &self.menu {
             m.dock.set_checked(on);
         }
+        self.sync_windows_taskbar();
+    }
+
+    fn set_hide_taskbar(&mut self, on: bool) {
+        self.cfg.hide_windows_taskbar = on;
+        self.cfg.save();
+        if let Some(m) = &self.menu {
+            m.win_taskbar.set_checked(on);
+        }
+        self.sync_windows_taskbar();
+    }
+
+    /// Hide the Windows taskbar while the dock runs (if asked to); show it otherwise.
+    fn sync_windows_taskbar(&mut self) {
+        let hide = self.cfg.hide_windows_taskbar && self.dock.is_some();
+        if hide || self.taskbar_hidden {
+            crate::desktop::set_windows_taskbar_visible(!hide);
+        }
+        self.taskbar_hidden = hide;
     }
 
     fn toggle_launcher(&mut self) {
@@ -419,6 +444,10 @@ impl App {
                     m.edge.set_checked(self.cfg.edge_glow);
                 }
             }
+            C::WinTaskbar => {
+                let on = !self.cfg.hide_windows_taskbar;
+                self.set_hide_taskbar(on);
+            }
             C::Dock => {
                 let on = !self.cfg.dock;
                 self.set_dock(el, on);
@@ -507,6 +536,7 @@ impl App {
         let widget = CheckMenuItem::new("Lyrics widget", true, self.cfg.lyrics_widget, None);
         let edge = CheckMenuItem::new("Edge glow", true, self.cfg.edge_glow, None);
         let dock = CheckMenuItem::new("Taskbar dock", true, self.cfg.dock, None);
+        let win_taskbar = CheckMenuItem::new("Hide Windows taskbar", true, self.cfg.hide_windows_taskbar, None);
         let lyrics_only = CheckMenuItem::new("Widget: lyrics only", true, self.cfg.widget_lyrics_only, None);
         let bgsub = Submenu::new("Widget background", true);
         let mut bgs = vec![];
@@ -550,6 +580,7 @@ impl App {
             &widget,
             &edge,
             &dock,
+            &win_taskbar,
             &PredefinedMenuItem::separator(),
             &lyrics_only,
             &sizesub,
@@ -570,7 +601,7 @@ impl App {
             .with_icon(icon)
             .build()
             .ok();
-        self.menu = Some(MenuIds { island, widget, lyrics_only, sizes, bgs, edge, dock, fullscreen, wstyles, fstyles, earlier, later, reset, autostart, config, quit });
+        self.menu = Some(MenuIds { island, widget, lyrics_only, sizes, bgs, edge, dock, win_taskbar, fullscreen, wstyles, fstyles, earlier, later, reset, autostart, config, quit });
     }
 
     /// Registers any hotkey not yet owned. Called at startup and retried every few
@@ -622,6 +653,7 @@ impl App {
             if id == *m.quit.id() {
                 self.save_widget_pos();
                 self.destroy_dock();
+                crate::desktop::set_windows_taskbar_visible(true);
                 el.exit();
                 return;
             } else if id == *m.island.id() {
@@ -657,6 +689,9 @@ impl App {
                 } else {
                     self.edge = None;
                 }
+            } else if id == *m.win_taskbar.id() {
+                let on = m.win_taskbar.is_checked();
+                self.set_hide_taskbar(on);
             } else if id == *m.dock.id() {
                 let on = m.dock.is_checked();
                 self.set_dock(el, on);
@@ -1059,6 +1094,10 @@ impl ApplicationHandler for App {
         self.handle_events(el);
         let now = Instant::now();
 
+        if now.duration_since(self.last_taskbar_sync) > Duration::from_millis(700) {
+            self.last_taskbar_sync = now;
+            self.sync_windows_taskbar();
+        }
         if now.duration_since(self.last_fs_check) > Duration::from_millis(500) {
             self.last_fs_check = now;
             let ours = self.fs.is_some();
@@ -1198,7 +1237,7 @@ fn tray_icon_image() -> tray_icon::Icon {
             let d = (dx * dx + dy * dy).sqrt();
             let ang = dy.atan2(dx);
             let t = 0.5 + 0.5 * ang.sin();
-            let (r, g, b) = (140.0 + 100.0 * t, 90.0 + 60.0 * (1.0 - t), 255.0);
+            let (r, g, b) = (30.0 + 30.0 * t, 100.0 + 90.0 * t, 245.0);
             let ring = (1.0 - ((d - 11.0).abs() - 2.4).clamp(0.0, 1.0)).max(if d < 4.5 { 1.0 - (d - 3.5).clamp(0.0, 1.0) } else { 0.0 });
             let i = ((y * n + x) * 4) as usize;
             px[i] = r as u8;

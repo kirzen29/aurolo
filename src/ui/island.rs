@@ -45,6 +45,7 @@ pub enum CfgChange {
     FsStyle,
     Edge,
     Dock,
+    WinTaskbar,
     Autostart,
     OpenFile,
 }
@@ -1870,7 +1871,7 @@ impl Island {
     fn tab_settings(&mut self, f: &mut Frame, input: &Input, pal: &Palette, area: [f32; 4], a: f32, cfg: &Config) -> Option<CfgChange> {
         let [x, y, w, _h] = area;
         let onoff = |b: bool| if b { "On" } else { "Off" };
-        let rows: [(&str, String, CfgChange, bool); 10] = [
+        let rows: [(&str, String, CfgChange, bool); 11] = [
             ("Lyrics widget", onoff(cfg.lyrics_widget).into(), CfgChange::Widget, cfg.lyrics_widget),
             ("Widget layout", if cfg.widget_lyrics_only { "Lyrics only" } else { "Full" }.into(), CfgChange::WidgetLayout, false),
             ("Widget size", cfg.widget_size_name().into(), CfgChange::WidgetSize, false),
@@ -1879,20 +1880,21 @@ impl Island {
             ("Fullscreen lyric style", cfg.fullscreen_style.name().into(), CfgChange::FsStyle, false),
             ("Edge glow", onoff(cfg.edge_glow).into(), CfgChange::Edge, cfg.edge_glow),
             ("Taskbar dock", onoff(cfg.dock).into(), CfgChange::Dock, cfg.dock),
+            ("Hide Windows taskbar", onoff(cfg.hide_windows_taskbar).into(), CfgChange::WinTaskbar, cfg.hide_windows_taskbar),
             ("Start with Windows", onoff(cfg.autostart).into(), CfgChange::Autostart, cfg.autostart),
             ("All settings (file)", "Open".into(), CfgChange::OpenFile, false),
         ];
         let cols = 2;
         let cw = (w - 12.0) / cols as f32;
-        let rh = 54.0;
+        let rh = if rows.len() > 10 { 44.0 } else { 54.0 };
         let mut out = None;
         for (k, (label, value, change, active)) in rows.iter().enumerate() {
             let cx = x + (k % cols) as f32 * (cw + 12.0);
-            let ry = y + (k / cols) as f32 * (rh + 8.0);
+            let ry = y + (k / cols) as f32 * (rh + 6.0);
             let r = [cx, ry, cw, rh];
             let hv = input.over(r);
             f.scene.shape(Shape::rect(cx, ry, cw, rh, 16.0, [1.0, 1.0, 1.0, if hv { 0.09 } else { 0.055 } * a]));
-            f.scene.text(Text::new(*label, cx + 18.0, ry + 17.0, 13.5, with_a(WHITE, 0.9 * a)).weight(600));
+            f.scene.text(Text::new(*label, cx + 18.0, ry + (rh - 17.0) / 2.0 - 1.0, 13.5, with_a(WHITE, 0.9 * a)).weight(600));
             let vt = Text::new(value.clone(), 0.0, 0.0, 12.0, WHITE).weight(600);
             let vw = f.measure(&vt).0 + 24.0;
             let px = cx + cw - 14.0 - vw;

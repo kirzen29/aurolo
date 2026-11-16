@@ -103,6 +103,8 @@ pub struct Dock {
     thumb_req: Sender<PathBuf>,
     thumb_rx: Receiver<(PathBuf, Option<Px>)>,
     thumb_pending: HashSet<PathBuf>,
+    /// Windows panel the dock last opened (quick settings, notifications, Start, Task View).
+    panel: Option<u8>,
     /// Demo screenshots: open the right-click menu of the focused app once.
     debug_menu: bool,
     pub hits: Vec<[f32; 4]>,
@@ -194,6 +196,7 @@ impl Dock {
             thumb_pending: HashSet::new(),
             hits: vec![],
             busy: false,
+            panel: None,
             debug_menu: crate::demo::is_demo() && std::env::var("AUROLO_DEMO_DOCK_MENU").is_ok(),
         }
     }
@@ -292,6 +295,18 @@ impl Dock {
         }
         f.painter.touch_image(k);
         Some(k)
+    }
+
+    /// Open a Windows panel, or close it if it's the one we opened and it's still up
+    /// (a second click toggles, like the Windows taskbar).
+    fn toggle_panel(&mut self, id: u8, open: impl FnOnce()) {
+        if self.panel == Some(id) && shell::shell_panel_open(&self.wins) {
+            shell::dismiss_shell_panel(self.fg);
+            self.panel = None;
+        } else {
+            open();
+            self.panel = Some(id);
+        }
     }
 
     fn timer_remaining(&self) -> Option<f32> {
@@ -453,7 +468,7 @@ impl Dock {
                 tip = Some((t, rx + status_w / 2.0));
             }
             if input.clicked(r) {
-                platform::open("ms-actioncenter:controlcenter/");
+                self.toggle_panel(1, || platform::open("ms-actioncenter:controlcenter/"));
             }
             rx += status_w;
         }
@@ -477,7 +492,7 @@ impl Dock {
                 tip = Some((format!("{}  ·  {n}", platform::WEEKDAYS[lt.weekday as usize % 7]), tx));
             }
             if input.clicked(r) {
-                platform::open("ms-actioncenter:");
+                self.toggle_panel(2, || platform::open("ms-actioncenter:"));
             }
             rx += clock_w;
         }
@@ -661,7 +676,7 @@ impl Dock {
                 tip = Some(("Start".into(), c));
             }
             if input.clicked(r) {
-                desktop::open_start();
+                self.toggle_panel(3, desktop::open_start);
             }
             x += 38.0;
         }
@@ -695,7 +710,7 @@ impl Dock {
                 tip = Some(("Task View".into(), c));
             }
             if input.clicked(r) {
-                desktop::task_view();
+                self.toggle_panel(4, desktop::task_view);
             }
             x += 38.0;
         }

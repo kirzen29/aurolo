@@ -283,6 +283,28 @@ pub fn shell_icon(parsing: &str) -> Option<(u32, u32, Vec<u8>)> {
     }
 }
 
+/// Hide or show the Windows taskbar on every monitor. Windows shows it again by itself
+/// when Explorer restarts, so callers re-apply this periodically.
+pub fn set_windows_taskbar_visible(visible: bool) {
+    unsafe extern "system" fn cb(hwnd: HWND, lp: LPARAM) -> windows::core::BOOL {
+        unsafe {
+            let mut cls = [0u16; 64];
+            let n = GetClassNameW(hwnd, &mut cls);
+            let name = String::from_utf16_lossy(&cls[..n.max(0) as usize]);
+            if name == "Shell_TrayWnd" || name == "Shell_SecondaryTrayWnd" {
+                let show = lp.0 != 0;
+                if IsWindowVisible(hwnd).as_bool() != show {
+                    let _ = ShowWindow(hwnd, if show { SW_SHOWNA } else { SW_HIDE });
+                }
+            }
+        }
+        TRUE
+    }
+    unsafe {
+        let _ = EnumWindows(Some(cb), LPARAM(visible as isize));
+    }
+}
+
 /// Open the Start menu (asks the taskbar, no simulated key presses).
 pub fn open_start() {
     unsafe {
