@@ -39,6 +39,7 @@ enum Tab {
 pub enum CfgChange {
     Widget,
     WidgetLayout,
+    WidgetSize,
     WidgetBg,
     WidgetStyle,
     FsStyle,
@@ -1868,9 +1869,10 @@ impl Island {
     fn tab_settings(&mut self, f: &mut Frame, input: &Input, pal: &Palette, area: [f32; 4], a: f32, cfg: &Config) -> Option<CfgChange> {
         let [x, y, w, _h] = area;
         let onoff = |b: bool| if b { "On" } else { "Off" };
-        let rows: [(&str, String, CfgChange, bool); 8] = [
+        let rows: [(&str, String, CfgChange, bool); 9] = [
             ("Lyrics widget", onoff(cfg.lyrics_widget).into(), CfgChange::Widget, cfg.lyrics_widget),
             ("Widget layout", if cfg.widget_lyrics_only { "Lyrics only" } else { "Full" }.into(), CfgChange::WidgetLayout, false),
+            ("Widget size", cfg.widget_size_name().into(), CfgChange::WidgetSize, false),
             ("Widget background", cfg.widget_background.name().into(), CfgChange::WidgetBg, false),
             ("Widget lyric style", cfg.widget_style.name().into(), CfgChange::WidgetStyle, false),
             ("Fullscreen lyric style", cfg.fullscreen_style.name().into(), CfgChange::FsStyle, false),

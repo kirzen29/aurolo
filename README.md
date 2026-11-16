@@ -95,7 +95,7 @@ Aurolo runs in the background with an icon in the system tray. Right-click the t
 | In fullscreen: `Space` | Play/pause |
 | In fullscreen: `[` / `]` | Shift lyric timing earlier/later |
 
-- **Lyrics widget:** drag to move, drag the dots in the bottom-right corner to resize, and hover for controls (layout, background, style, fullscreen, close).
+- **Lyrics widget:** drag to move. To resize, **scroll the mouse wheel over it**, drag the dots in the bottom-right corner, or pick Small, Medium or Large under tray → Widget size or Settings. Hover for controls (layout, background, style, fullscreen, close).
 - **Island:** hover to peek, click to open, and drag files onto it to add them to the shelf.
 
 ### Settings

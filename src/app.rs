@@ -119,6 +119,7 @@ struct MenuIds {
     island: CheckMenuItem,
     widget: CheckMenuItem,
     lyrics_only: CheckMenuItem,
+    sizes: Vec<(CheckMenuItem, usize)>,
     bgs: Vec<(CheckMenuItem, WidgetBg)>,
     edge: CheckMenuItem,
     fullscreen: MenuItem,
@@ -276,6 +277,11 @@ impl App {
                 self.toggle_widget(el, on);
             }
             C::WidgetLayout => self.toggle_layout(),
+            C::WidgetSize => {
+                let next = self.cfg.widget_preset().map(|i| (i + 1) % crate::config::WIDGET_PRESETS.len()).unwrap_or(0);
+                let s = self.cfg.apply_widget_preset(next);
+                self.resize_widget(s);
+            }
             C::WidgetBg => {
                 let b = self.cfg.widget_background.next();
                 self.set_bg(b);
@@ -324,6 +330,25 @@ impl App {
         }
     }
 
+    /// Resize the lyrics widget window, remember the size, and update the tray checks.
+    fn resize_widget(&mut self, s: (f32, f32)) {
+        self.cfg.set_widget_size(s);
+        self.cfg.save();
+        if let Some((w, _)) = &self.widget {
+            let _ = w.painter.window.request_inner_size(LogicalSize::new(s.0, s.1));
+        }
+        self.sync_size_checks();
+    }
+
+    fn sync_size_checks(&self) {
+        if let Some(m) = &self.menu {
+            let cur = self.cfg.widget_preset();
+            for (it, i) in &m.sizes {
+                it.set_checked(cur == Some(*i));
+            }
+        }
+    }
+
     fn toggle_layout(&mut self) {
         self.cfg.widget_lyrics_only = !self.cfg.widget_lyrics_only;
         self.cfg.save();
@@ -335,6 +360,7 @@ impl App {
         if let Some(m) = &self.menu {
             m.lyrics_only.set_checked(self.cfg.widget_lyrics_only);
         }
+        self.sync_size_checks();
     }
 
     fn set_bg(&mut self, b: WidgetBg) {
@@ -381,6 +407,14 @@ impl App {
             let _ = bgsub.append(&it);
             bgs.push((it, b));
         }
+        let sizesub = Submenu::new("Widget size", true);
+        let mut sizes = vec![];
+        let cur_preset = self.cfg.widget_preset();
+        for (i, p) in crate::config::WIDGET_PRESETS.iter().enumerate() {
+            let it = CheckMenuItem::new(p.0, true, cur_preset == Some(i), None);
+            let _ = sizesub.append(&it);
+            sizes.push((it, i));
+        }
         let fullscreen = MenuItem::new(format!("Fullscreen lyrics\t{}", self.cfg.hotkey_lyrics), true, None);
         let wsub = Submenu::new("Widget style", true);
         let fsub = Submenu::new("Fullscreen style", true);
@@ -409,6 +443,7 @@ impl App {
             &edge,
             &PredefinedMenuItem::separator(),
             &lyrics_only,
+            &sizesub,
             &bgsub,
             &fullscreen,
             &wsub,
@@ -426,7 +461,7 @@ impl App {
             .with_icon(icon)
             .build()
             .ok();
-        self.menu = Some(MenuIds { island, widget, lyrics_only, bgs, edge, fullscreen, wstyles, fstyles, earlier, later, reset, autostart, config, quit });
+        self.menu = Some(MenuIds { island, widget, lyrics_only, sizes, bgs, edge, fullscreen, wstyles, fstyles, earlier, later, reset, autostart, config, quit });
     }
 
     /// Registers any hotkey not yet owned. Called at startup and retried every few
@@ -509,6 +544,9 @@ impl App {
                 if v != self.cfg.widget_lyrics_only {
                     self.toggle_layout();
                 }
+            } else if let Some(i) = m.sizes.iter().find(|(it, _)| id == *it.id()).map(|(_, i)| *i) {
+                let s = self.cfg.apply_widget_preset(i);
+                self.resize_widget(s);
             } else if let Some(b) = m.bgs.iter().find(|(it, _)| id == *it.id()).map(|(_, b)| *b) {
                 self.set_bg(b);
             } else if id == *m.edge.id() {
@@ -645,11 +683,8 @@ impl App {
                     if let Some((w, _)) = &self.widget {
                         let _ = w.painter.window.request_inner_size(LogicalSize::new(nw, nh));
                     }
-                    if self.cfg.widget_lyrics_only {
-                        self.cfg.widget_size_lyrics = Some((nw.round(), nh.round()));
-                    } else {
-                        self.cfg.widget_size_full = Some((nw.round(), nh.round()));
-                    }
+                    self.cfg.set_widget_size((nw, nh));
+                    self.sync_size_checks();
                     self.save_widget_pos();
                 }
                 WidgetAction::StyleChanged(s) => {

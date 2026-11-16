@@ -34,8 +34,8 @@ pub struct Widget {
     last_size: (f32, f32),
 }
 
-pub const MIN_FULL: (f32, f32) = (380.0, 150.0);
-pub const MIN_LYRICS: (f32, f32) = (260.0, 64.0);
+pub const MIN_FULL: (f32, f32) = (300.0, 118.0);
+pub const MIN_LYRICS: (f32, f32) = (200.0, 46.0);
 pub const MAX: (f32, f32) = (1600.0, 700.0);
 const GRIP: f32 = 22.0;
 
@@ -89,6 +89,13 @@ impl Widget {
                 self.last_size = (nw, nh);
                 action = WidgetAction::Resize(nw, nh);
             }
+        }
+        // ---- mouse wheel over the widget: smaller / bigger (keeps proportions)
+        if self.resizing.is_none() && input.scroll.abs() > 0.01 && input.over(card) {
+            let k = (1.0 + 0.08 * input.scroll).clamp(0.7, 1.4);
+            let min = Self::min_size(self.lyrics_only);
+            let k = k.max(min.0 / w).max(min.1 / h).min(MAX.0 / w).min(MAX.1 / h);
+            action = WidgetAction::ResizeEnd(w * k, h * k);
         }
 
         // ---- card

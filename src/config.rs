@@ -141,6 +141,13 @@ impl Default for Config {
     }
 }
 
+/// Lyrics widget size presets: (name, full layout size, lyrics-only size), logical px.
+pub const WIDGET_PRESETS: [(&str, (f32, f32), (f32, f32)); 3] = [
+    ("Small", (400.0, 155.0), (340.0, 76.0)),
+    ("Medium", (490.0, 182.0), (430.0, 98.0)),
+    ("Large", (620.0, 232.0), (580.0, 130.0)),
+];
+
 pub fn data_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     let d = base.join("Aurolo");
@@ -174,11 +181,43 @@ impl Config {
     }
     /// Logical size of the lyrics widget for the current layout.
     pub fn widget_size(&self) -> (f32, f32) {
+        let m = WIDGET_PRESETS[1];
         if self.widget_lyrics_only {
-            self.widget_size_lyrics.unwrap_or((520.0, 120.0))
+            self.widget_size_lyrics.unwrap_or(m.2)
         } else {
-            self.widget_size_full.unwrap_or((560.0, 210.0))
+            self.widget_size_full.unwrap_or(m.1)
         }
+    }
+
+    /// Store a size for the current widget layout.
+    pub fn set_widget_size(&mut self, s: (f32, f32)) {
+        let s = (s.0.round(), s.1.round());
+        if self.widget_lyrics_only {
+            self.widget_size_lyrics = Some(s);
+        } else {
+            self.widget_size_full = Some(s);
+        }
+    }
+
+    /// Index of the preset matching the current size, if any.
+    pub fn widget_preset(&self) -> Option<usize> {
+        let cur = self.widget_size();
+        WIDGET_PRESETS.iter().position(|p| {
+            let s = if self.widget_lyrics_only { p.2 } else { p.1 };
+            (s.0 - cur.0).abs() < 1.0 && (s.1 - cur.1).abs() < 1.0
+        })
+    }
+
+    pub fn widget_size_name(&self) -> &'static str {
+        self.widget_preset().map(|i| WIDGET_PRESETS[i].0).unwrap_or("Custom")
+    }
+
+    /// Apply preset `i` (0 = Small, 1 = Medium, 2 = Large) and return the new size.
+    pub fn apply_widget_preset(&mut self, i: usize) -> (f32, f32) {
+        let p = WIDGET_PRESETS[i.min(WIDGET_PRESETS.len() - 1)];
+        let s = if self.widget_lyrics_only { p.2 } else { p.1 };
+        self.set_widget_size(s);
+        s
     }
     pub fn save(&self) {
         if crate::demo::is_demo() {
