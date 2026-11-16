@@ -6,6 +6,7 @@ mod app;
 mod config;
 mod demo;
 mod gfx;
+mod netctl;
 mod platform;
 mod services;
 mod desktop;

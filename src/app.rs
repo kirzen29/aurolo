@@ -873,6 +873,15 @@ impl App {
             );
             let scene = std::mem::take(&mut f.scene);
             w.painter.render(gpu, &scene, t);
+            if let Some(on) = dk.focus_req.take() {
+                // typing a Wi-Fi password: let the dock take the keyboard for a moment
+                w.set_overlay(!on);
+                if on {
+                    w.set_through(false);
+                    w.painter.window.focus_window();
+                    platform::force_foreground(w.hwnd);
+                }
+            }
             if dk.dismiss_req {
                 dk.dismiss_req = false;
                 // let the dock take focus for a moment so Windows closes its panel

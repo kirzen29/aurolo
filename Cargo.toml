@@ -33,6 +33,7 @@ features = [
   "Networking_Connectivity",
   "Devices_Enumeration",
   "Devices_Radios",
+  "Win32_NetworkManagement_WiFi",
   "UI_Notifications",
   "UI_Notifications_Management",
   "ApplicationModel",

@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use crate::anim::*;
 use crate::desktop::{self, Pin};
 use crate::gfx::*;
+use crate::netctl;
 use crate::platform;
 use crate::shell::{self, TaskWin};
 use crate::state::*;
@@ -102,6 +103,22 @@ pub struct Dock {
     cc_drag: Option<(u8, f32)>,
     /// Brightness shown right after a change (Windows reports it back with a delay).
     cc_bri: Option<(f32, Instant)>,
+    /// 0 = main, 1 = Wi-Fi list, 2 = Bluetooth list.
+    cc_page: u8,
+    wifi: Arc<parking_lot::Mutex<netctl::WifiState>>,
+    wifi_tx: Sender<netctl::WifiCmd>,
+    bt: Arc<parking_lot::Mutex<netctl::BtState>>,
+    bt_tx: Sender<netctl::BtCmd>,
+    cc_scroll: f32,
+    cc_poll: Option<Instant>,
+    cc_sel: Option<String>,
+    cc_error: Option<(String, Instant)>,
+    /// Network whose password is being typed, and the password so far.
+    pw_for: Option<String>,
+    pw: String,
+    has_focus: bool,
+    /// Ask the app to give the dock keyboard focus (typing a password) or release it.
+    pub focus_req: Option<bool>,
     dial_a: f32,
     dial_x: f32,
     dial_pos: f32,
@@ -178,6 +195,8 @@ impl Dock {
     pub fn new() -> Self {
         let (thumb_req, thumb_rx) = spawn_thumb_loader();
         let (radios, radio_tx) = desktop::spawn_radios();
+        let (wifi, wifi_tx) = netctl::spawn_wifi();
+        let (bt, bt_tx) = netctl::spawn_bluetooth();
         Dock {
             wins: vec![],
             last_scan: None,
@@ -202,6 +221,27 @@ impl Dock {
             radio_tx,
             cc_drag: None,
             cc_bri: None,
+            cc_page: if crate::demo::is_demo() {
+                match std::env::var("AUROLO_DEMO_DOCK_CC").unwrap_or_default().as_str() {
+                    "wifi" => 1,
+                    "bt" => 2,
+                    _ => 0,
+                }
+            } else {
+                0
+            },
+            wifi,
+            wifi_tx,
+            bt,
+            bt_tx,
+            cc_scroll: 0.0,
+            cc_poll: None,
+            cc_sel: None,
+            cc_error: None,
+            pw_for: None,
+            pw: String::new(),
+            has_focus: false,
+            focus_req: None,
             dial_a: 0.0,
             dial_x: 0.0,
             dial_pos: 0.0,
@@ -947,6 +987,19 @@ impl Dock {
             popup_rects.push(rect);
         }
 
+        // back to the main page once the control center has closed
+        if !self.cc_open && self.cc_a < 0.02 {
+            self.cc_page = 0;
+            self.pw_for = None;
+            self.cc_sel = None;
+        }
+        // keyboard focus only while a Wi-Fi password is being typed
+        let want_focus = self.cc_open && self.pw_for.is_some();
+        if want_focus != self.has_focus {
+            self.has_focus = want_focus;
+            self.focus_req = Some(want_focus);
+        }
+
         // close popups on a press elsewhere or Esc
         if input.key(Key::Esc) {
             self.menu = None;
@@ -1102,9 +1155,9 @@ impl Dock {
         let battery = shared.sys.read().battery.clone();
         let radios = *self.radios.lock();
         let w = 352.0;
-        let tile_h = 56.0;
+        let tile_h: f32 = 56.0;
         let has_bri = brightness.is_some();
-        let h = 16.0 + (tile_h + 24.0) * 2.0 + 6.0 + if has_bri { 42.0 } else { 0.0 } + 42.0 + 46.0;
+        let h = (16.0 + (tile_h + 24.0) * 2.0 + 6.0 + if has_bri { 42.0 } else { 0.0 } + 42.0 + 46.0).max(312.0);
         let x = (right_edge - w).max(8.0);
         let y = TIP_H - h - 6.0 + 12.0 * (1.0 - a);
         let rect = [x, y, w, h];
@@ -1114,6 +1167,10 @@ impl Dock {
         f.scene.shape(Shape::stroke(x, y, w, h, 22.0, 1.0, with_a(WHITE, 0.22 * a)));
         let _ = pal;
         let accent = rgba(70, 140, 255, 1.0);
+        if self.cc_page != 0 {
+            self.draw_cc_page(f, input, shared, rect, a, accent);
+            return rect;
+        }
 
         // ---- tiles
         enum Act {
@@ -1168,8 +1225,10 @@ impl Dock {
                 f.scene.shape(Shape::rect(cr[0], ty + 12.0, 1.0, tile_h - 24.0, 0.5, with_a(fg, 0.25)));
                 f.icon('\u{E76C}', cr[0] + cr[2] / 2.0, ty + tile_h / 2.0, 10.0, fg);
                 if input.clicked(cr) {
-                    platform::open(target);
-                    self.cc_open = false;
+                    self.cc_page = if target.contains("bluetooth") { 2 } else { 1 };
+                    self.cc_scroll = 0.0;
+                    self.cc_poll = None;
+                    self.cc_sel = None;
                 }
             }
             let lt = f.fit(Text::new(label, tx + tw / 2.0, ty + tile_h + 5.0, 11.0, with_a(WHITE, 0.8 * a)).center(), tw + 6.0);
@@ -1293,6 +1352,279 @@ impl Dock {
         rect
     }
 
+
+    /// Wi-Fi (page 1) or Bluetooth (page 2) list inside the control center.
+    fn draw_cc_page(&mut self, f: &mut Frame, input: &Input, shared: &Shared, rect: [f32; 4], a: f32, accent: Rgba) {
+        let [x, y, w, h] = rect;
+        let wifi_page = self.cc_page == 1;
+        let radios = *self.radios.lock();
+        // ---- header: back, title, on/off switch
+        if f.icon_button(input, '\u{E72B}', x + 26.0, y + 26.0, 11.0, with_a(WHITE, 0.9 * a)) {
+            self.cc_page = 0;
+            self.pw_for = None;
+            self.cc_sel = None;
+        }
+        let title = if wifi_page { "Wi-Fi" } else { "Bluetooth" };
+        f.scene.text(Text::new(title, x + 46.0, y + 17.0, 14.0, with_a(WHITE, 0.95 * a)).weight(700));
+        let on = if wifi_page { radios.wifi } else { radios.bluetooth };
+        if let Some(on) = on {
+            let sx = x + w - 62.0;
+            let sr = [sx, y + 16.0, 44.0, 22.0];
+            f.scene.shape(Shape::rect(sr[0], sr[1], sr[2], sr[3], 11.0, if on { with_a(accent, a) } else { with_a(WHITE, 0.14 * a) }));
+            let kx = if on { sx + 33.0 } else { sx + 11.0 };
+            f.scene.shape(Shape::rect(kx - 7.0, y + 20.0, 14.0, 14.0, 7.0, with_a(if on { [0.03, 0.04, 0.08, 1.0] } else { WHITE }, a)));
+            if input.clicked(sr) {
+                let _ = self.radio_tx.send(desktop::RadioCmd::Set { wifi: wifi_page, on: !on });
+                let mut st = self.radios.lock();
+                if wifi_page {
+                    st.wifi = Some(!on);
+                } else {
+                    st.bluetooth = Some(!on);
+                }
+            }
+        }
+        f.scene.shape(Shape::rect(x + 1.0, y + 50.0, w - 2.0, 1.0, 0.5, with_a(WHITE, 0.08 * a)));
+
+        // ---- list
+        let list_top = y + 56.0;
+        let list_bot = y + h - 46.0;
+        let clip = [x, list_top, x + w, list_bot];
+        let row_h = 46.0;
+        // keep the list fresh while it's on screen
+        if self.cc_poll.map(|t| t.elapsed() > Duration::from_secs(if wifi_page { 10 } else { 3 })).unwrap_or(true) {
+            self.cc_poll = Some(Instant::now());
+            if wifi_page {
+                let _ = self.wifi_tx.send(netctl::WifiCmd::Scan);
+            } else {
+                let _ = self.bt_tx.send(netctl::BtCmd::Refresh);
+            }
+        }
+        struct Row {
+            key: String,
+            icon: char,
+            name: String,
+            sub: String,
+            connected: bool,
+            busy: bool,
+        }
+        let mut rows: Vec<Row> = vec![];
+        let mut note: Option<String> = None;
+        if wifi_page {
+            let st = self.wifi.lock().clone();
+            if on == Some(false) {
+                note = Some("Wi-Fi is off".into());
+            } else if !st.scanned {
+                note = Some("Looking for networks…".into());
+            } else if st.networks.is_empty() {
+                note = Some("No networks found".into());
+            }
+            if let Some(e) = &st.error {
+                self.cc_error = Some((e.clone(), Instant::now()));
+            }
+            if on != Some(false) {
+                for n in &st.networks {
+                    let icon = match n.signal {
+                        0..=25 => '\u{E872}',
+                        26..=50 => '\u{E873}',
+                        51..=75 => '\u{E874}',
+                        _ => '\u{E701}',
+                    };
+                    let busy = st.connecting.as_deref() == Some(n.ssid.as_str());
+                    let sub = if busy {
+                        "Connecting…".to_string()
+                    } else if n.connected {
+                        if n.secured { "Connected, secured".into() } else { "Connected".into() }
+                    } else if n.profile.is_some() {
+                        "Saved".into()
+                    } else if n.secured {
+                        "Secured".into()
+                    } else {
+                        "Open".into()
+                    };
+                    rows.push(Row { key: n.ssid.clone(), icon, name: n.ssid.clone(), sub, connected: n.connected, busy });
+                }
+            }
+        } else {
+            let st = self.bt.lock().clone();
+            let batt: Vec<(String, u8)> = shared.misc.read().bt_devices.iter().map(|d| (d.name.clone(), d.battery)).collect();
+            if on == Some(false) {
+                note = Some("Bluetooth is off".into());
+            } else if !st.loaded {
+                note = Some("Loading devices…".into());
+            } else if st.devices.is_empty() {
+                note = Some("No paired devices".into());
+            }
+            if on != Some(false) {
+                for d in &st.devices {
+                    let busy = st.busy.as_deref() == Some(d.name.as_str());
+                    let b = batt.iter().find(|(n, _)| n == &d.name || n.contains(&d.name) || d.name.contains(n.as_str())).map(|x| x.1);
+                    let mut sub = if busy {
+                        if d.connected { "Disconnecting…".to_string() } else { "Connecting…".to_string() }
+                    } else if d.connected {
+                        "Connected".to_string()
+                    } else if d.audio {
+                        "Not connected".to_string()
+                    } else {
+                        "Paired".to_string()
+                    };
+                    if let (Some(b), true) = (b, d.connected) {
+                        sub += &format!("  ·  {b}%");
+                    }
+                    let icon = if d.audio { '\u{E7F6}' } else { ic::BT };
+                    rows.push(Row { key: d.name.clone(), icon, name: d.name.clone(), sub, connected: d.connected, busy });
+                }
+            }
+        }
+        if let Some(n) = note.filter(|_| rows.is_empty()) {
+            f.scene.text(Text::new(n, x + w / 2.0, list_top + 40.0, 12.5, with_a(WHITE, 0.6 * a)).center());
+        }
+        // scrolling
+        let pw_extra = if self.pw_for.is_some() { 52.0 } else { 0.0 };
+        let content_h = rows.len() as f32 * row_h + pw_extra;
+        let view_h = list_bot - list_top;
+        if input.over([x, list_top, w, view_h]) && input.scroll.abs() > 0.01 {
+            self.cc_scroll -= input.scroll * 40.0;
+        }
+        self.cc_scroll = self.cc_scroll.clamp(0.0, (content_h - view_h).max(0.0));
+        let mut ry = list_top - self.cc_scroll;
+        for row in &rows {
+            let r = [x + 8.0, ry + 2.0, w - 16.0, row_h - 4.0];
+            let visible = ry + row_h > list_top && ry < list_bot;
+            let hov = visible && input.over(r) && input.over([x, list_top, w, view_h]);
+            if visible {
+                if hov || row.connected {
+                    f.scene.shape(Shape::rect(r[0], r[1], r[2], r[3], 10.0, with_a(WHITE, if hov { 0.09 } else { 0.05 } * a)));
+                }
+                let ic_col = if row.connected { with_a(accent, a) } else { with_a(WHITE, 0.85 * a) };
+                f.scene.text(
+                    Text::new(row.icon.to_string(), x + 30.0, ry + row_h / 2.0 - 10.0, 15.0, ic_col).family(Family::Icons).center().clip(clip),
+                );
+                let nt = f.fit(Text::new(&row.name, x + 52.0, ry + 6.0, 12.5, with_a(WHITE, 0.95 * a)).weight(600), w - 150.0);
+                f.scene.text(Text { clip: Some(clip), ..nt });
+                let sc = if row.connected { with_a(accent, 0.95 * a) } else { with_a(WHITE, 0.55 * a) };
+                f.scene.text(Text::new(&row.sub, x + 52.0, ry + 24.0, 10.5, sc).clip(clip));
+                // action button on the right
+                let label = if row.busy {
+                    ""
+                } else if row.connected {
+                    "Disconnect"
+                } else {
+                    "Connect"
+                };
+                let show_btn = !row.busy && (hov || self.cc_sel.as_deref() == Some(row.key.as_str()));
+                let can = wifi_page || self.bt.lock().devices.iter().any(|d| d.name == row.key && d.audio);
+                if show_btn && can && !label.is_empty() {
+                    let bt = Text::new(label, 0.0, 0.0, 11.0, WHITE).weight(600);
+                    let bw = f.measure(&bt).0 + 22.0;
+                    let br = [x + w - 16.0 - bw, ry + (row_h - 26.0) / 2.0, bw, 26.0];
+                    let bh = input.over(br);
+                    let bg = if row.connected { with_a(WHITE, if bh { 0.2 } else { 0.12 } * a) } else { with_a(accent, if bh { 1.0 } else { 0.85 } * a) };
+                    f.scene.shape(Shape::rect(br[0], br[1], br[2], br[3], 13.0, bg));
+                    let tc = if row.connected { with_a(WHITE, 0.95 * a) } else { with_a([0.03, 0.04, 0.08, 1.0], a) };
+                    f.scene.text(Text { x: br[0] + bw / 2.0, y: br[1] + 5.5, color: tc, clip: Some(clip), ..bt }.center());
+                }
+                if input.clicked(r) && input.over([x, list_top, w, view_h]) {
+                    self.cc_sel = Some(row.key.clone());
+                    if wifi_page {
+                        let st = self.wifi.lock().clone();
+                        if let Some(n) = st.networks.iter().find(|n| n.ssid == row.key) {
+                            if n.connected {
+                                let _ = self.wifi_tx.send(netctl::WifiCmd::Disconnect);
+                                self.pw_for = None;
+                            } else if n.profile.is_some() || !n.secured {
+                                let _ = self.wifi_tx.send(netctl::WifiCmd::Connect {
+                                    ssid: n.ssid.clone(),
+                                    profile: n.profile.clone(),
+                                    password: None,
+                                    secured: n.secured,
+                                });
+                                self.pw_for = None;
+                            } else if n.supported_new {
+                                self.pw_for = Some(n.ssid.clone());
+                                self.pw.clear();
+                            } else {
+                                // enterprise / WPA3-only networks need Windows' own sign-in
+                                platform::open("ms-settings:network-wifi");
+                                self.cc_open = false;
+                            }
+                        }
+                    } else if can && !row.busy {
+                        let _ = self.bt_tx.send(netctl::BtCmd::Toggle { name: row.key.clone(), connect: !row.connected });
+                    }
+                }
+            }
+            ry += row_h;
+            // password box under the network that needs one
+            if wifi_page && self.pw_for.as_deref() == Some(row.key.as_str()) {
+                let pr = [x + 52.0, ry, w - 52.0 - 16.0 - 84.0, 34.0];
+                if ry + 40.0 > list_top && ry < list_bot {
+                    f.scene.shape(Shape::rect(pr[0], pr[1], pr[2], pr[3], 9.0, with_a(WHITE, 0.08 * a)));
+                    f.scene.shape(Shape::stroke(pr[0], pr[1], pr[2], pr[3], 9.0, 1.2, with_a(accent, 0.8 * a)));
+                    let shown = if self.pw.is_empty() { "Password".to_string() } else { "•".repeat(self.pw.chars().count()) };
+                    let pc = if self.pw.is_empty() { with_a(WHITE, 0.4 * a) } else { with_a(WHITE, 0.95 * a) };
+                    let t = f.fit(Text::new(shown, pr[0] + 10.0, pr[1] + 9.0, 12.0, pc), pr[2] - 20.0);
+                    let tw = if self.pw.is_empty() { 0.0 } else { f.measure(&t).0 };
+                    f.scene.text(Text { clip: Some(clip), ..t });
+                    if (f.t * 2.0) as i32 % 2 == 0 {
+                        f.scene.shape(Shape::rect(pr[0] + 10.0 + tw + 1.0, pr[1] + 9.0, 1.4, 16.0, 0.7, with_a(WHITE, 0.9 * a)));
+                    }
+                    let cr = [x + w - 16.0 - 76.0, ry + 4.0, 76.0, 26.0];
+                    let ready = self.pw.chars().count() >= 8;
+                    f.scene.shape(Shape::rect(cr[0], cr[1], cr[2], cr[3], 13.0, with_a(accent, if ready { 0.95 } else { 0.35 } * a)));
+                    f.scene.text(
+                        Text::new("Connect", cr[0] + 38.0, cr[1] + 5.5, 11.0, with_a([0.03, 0.04, 0.08, 1.0], a)).weight(650).center().clip(clip),
+                    );
+                    let submit = (input.clicked(cr) || input.key(Key::Enter)) && ready;
+                    if submit {
+                        let ssid = row.key.clone();
+                        let _ = self.wifi_tx.send(netctl::WifiCmd::Connect {
+                            ssid,
+                            profile: None,
+                            password: Some(std::mem::take(&mut self.pw)),
+                            secured: true,
+                        });
+                        self.pw_for = None;
+                    }
+                }
+                ry += pw_extra;
+            }
+        }
+        // typing into the password box
+        if self.pw_for.is_some() {
+            for ch in input.text.chars() {
+                if !ch.is_control() && self.pw.chars().count() < 63 {
+                    self.pw.push(ch);
+                }
+            }
+            if input.key(Key::Back) {
+                self.pw.pop();
+            }
+        }
+        // ---- footer: errors + link to the full settings page
+        let fy = y + h - 46.0;
+        f.scene.shape(Shape::rect(x + 1.0, fy, w - 2.0, 1.0, 0.5, with_a(WHITE, 0.08 * a)));
+        if let Some((e, t)) = &self.cc_error {
+            if t.elapsed() < Duration::from_secs(6) {
+                let et = f.fit(Text::new(e, x + 18.0, fy + 15.0, 11.0, with_a(rgba(255, 120, 120, 1.0), a)), w - 36.0);
+                f.scene.text(et);
+            } else {
+                self.cc_error = None;
+                self.wifi.lock().error = None;
+            }
+        }
+        if self.cc_error.is_none() {
+            let link = if wifi_page { "More Wi-Fi settings" } else { "More Bluetooth settings" };
+            let lt = Text::new(link, x + 18.0, fy + 15.0, 11.5, with_a(WHITE, 0.6 * a));
+            let lw = f.measure(&lt).0;
+            let lr = [x + 12.0, fy + 8.0, lw + 14.0, 30.0];
+            let lh = input.over(lr);
+            f.scene.text(Text { color: with_a(WHITE, if lh { 0.95 } else { 0.6 } * a), ..lt });
+            if input.clicked(lr) {
+                platform::open(if wifi_page { "ms-settings:network-wifi" } else { "ms-settings:bluetooth" });
+                self.cc_open = false;
+            }
+        }
+    }
 
     /// The wallpaper dial: a curved carousel of thumbnails above the dock.
     fn draw_dial(&mut self, f: &mut Frame, input: &Input, pal: &Palette) -> Option<[f32; 4]> {
