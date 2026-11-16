@@ -584,6 +584,17 @@ impl LyricView {
         c
     }
 
+    /// Full vertical extent of a constellation (stars and labels), in px at scale 1.
+    fn const_height(lay: &ConstLayout, size: f32) -> f32 {
+        let (mut y0, mut y1) = (f32::MAX, f32::MIN);
+        for (k, s) in lay.stars.iter().enumerate() {
+            let lab = lay.labels[k].1;
+            y0 = y0.min(s.1 - size * 0.4).min(lab);
+            y1 = y1.max(s.1 + size * 0.4).max(lab + size * 1.25);
+        }
+        if y0 > y1 { size * 2.0 } else { (y1 - y0).max(size * 2.0) }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn constellation(
         &mut self,
@@ -624,16 +635,52 @@ impl LyricView {
                 continue;
             }
             let lay = self.const_layout(f, i, line, size, max_w);
-            let exit_t = ly.lines.get(i + 1).map(|n| n.t).unwrap_or(line.end + 2.0).max(line.end + 0.25).min(line.end + 3.0);
-            let enter = ease_out_cubic(smooth((line.t - 0.7) as f32, line.t as f32, pos as f32));
-            let exit = ease_in_out(smooth(exit_t as f32, exit_t as f32 + 1.4, pos as f32));
+            // Handover between lines: the outgoing line drifts up while the incoming one rises
+            // from below, over the same window, each travelling at least its own height, so the
+            // two constellations never share the same space.
+            let trans = 0.45f64; // half the handover duration (s)
+            let lead = 0.25f64; // finish the handover just after the first word starts
+            let gap_close = 2.5f64; // lines closer than this hand over directly
+            let next = ly.lines.get(i + 1).filter(|n| !n.words.is_empty());
+            let exit_mid = match next {
+                Some(n) if n.t - line.end < gap_close => n.t - lead,
+                _ => line.end + 1.6,
+            };
+            let prev = if i > 0 { ly.lines.get(i - 1).filter(|p| !p.words.is_empty()) } else { None };
+            let enter_mid = match prev {
+                Some(p) if line.t - p.end < gap_close => line.t - lead,
+                _ => line.t - 0.5,
+            };
+            // Same easing for both sides of a handover, so at any moment the outgoing line has
+            // moved up exactly as far as the incoming one still has to rise.
+            let enter = ease_in_out(smooth((enter_mid - trans) as f32, (enter_mid + trans) as f32, pos as f32));
+            let exit = ease_in_out(smooth((exit_mid - trans) as f32, (exit_mid + trans) as f32, pos as f32));
             let ga = enter * (1.0 - exit);
             if ga <= 0.003 {
                 continue;
             }
             any_visible = true;
-            let scale = 0.86 + 0.14 * enter + 0.12 * exit;
-            let gy = center.1 + (1.0 - enter) * size * 1.2 - exit * size * 5.0;
+            // Travel distance is shared by the two lines of a handover and covers the taller
+            // of them plus a gap, so their bounding boxes stay apart throughout.
+            let h_self = Self::const_height(&lay, size);
+            let h_prev = match prev {
+                Some(p) => {
+                    let l = self.const_layout(f, i - 1, p, size, max_w);
+                    Self::const_height(&l, size)
+                }
+                None => h_self,
+            };
+            let h_next = match next {
+                Some(n) => {
+                    let l = self.const_layout(f, i + 1, n, size, max_w);
+                    Self::const_height(&l, size)
+                }
+                None => h_self,
+            };
+            let travel_in = h_self.max(h_prev) + size * 2.5;
+            let travel_out = h_self.max(h_next) + size * 2.5;
+            let scale = 0.92 + 0.08 * enter - 0.08 * exit;
+            let gy = center.1 + (1.0 - enter) * travel_in - exit * travel_out;
             let gx = center.0;
             let tf = |p: (f32, f32)| (gx + p.0 * scale, gy + p.1 * scale);
 
