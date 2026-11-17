@@ -183,6 +183,13 @@ pub fn cursor_pos() -> (i32, i32) {
     (p.x, p.y)
 }
 
+/// Is the mouse pointer visible? Games hide it, so this tells a game apart from a
+/// full-screen video.
+pub fn cursor_visible() -> bool {
+    let mut ci = CURSORINFO { cbSize: std::mem::size_of::<CURSORINFO>() as u32, ..Default::default() };
+    unsafe { GetCursorInfo(&mut ci).is_ok() && (ci.flags.0 & CURSOR_SHOWING.0) != 0 && !ci.hCursor.is_invalid() }
+}
+
 pub fn mouse_down() -> bool {
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
     unsafe { (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0 }

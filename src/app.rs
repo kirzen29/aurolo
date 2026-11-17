@@ -133,6 +133,8 @@ pub struct App {
     desktop_id: isize,
     /// Dock shown over a full-screen app because the mouse went to the bottom edge.
     dock_peek: bool,
+    /// When the pointer arrived at the bottom edge during a full-screen app.
+    edge_since: Option<Instant>,
     gpu_tries: u32,
     gpu_retry_at: Option<Instant>,
     /// Hotkey "already in use" warnings logged (lyrics, island).
@@ -186,6 +188,7 @@ impl App {
             dock_rc: None,
             taskbar_hidden: false,
             dock_peek: false,
+            edge_since: None,
             wall_fix_at: vec![Instant::now() + Duration::from_secs(4), Instant::now() + Duration::from_secs(20)],
             desktop_id: crate::desktop::desktop_window_id(),
             gpu_tries: 0,
@@ -1194,7 +1197,7 @@ impl ApplicationHandler for App {
                 .into_iter()
                 .flatten()
             {
-                if w.visible {
+                if w.visible && !self.fullscreen_app {
                     platform::keep_topmost(w.hwnd);
                 }
             }
@@ -1209,6 +1212,11 @@ impl ApplicationHandler for App {
         if let Some((w, _)) = &mut self.widget {
             w.set_visible(!hide_for_fs);
         }
+        if let Some((w, isl)) = &mut self.island {
+            // full-screen game / video: take the island's window away completely (an
+            // overlay drawing on top makes games like Valorant leave full-screen)
+            w.set_visible(!hide_for_fs || isl.launcher);
+        }
         let (mp, ms, msc) = self.mon_rect();
         if let Some((w, dk)) = &mut self.dock {
             let mut show = !hide_for_fs;
@@ -1218,11 +1226,18 @@ impl ApplicationHandler for App {
                 let (cx, cy) = platform::cursor_pos();
                 let on_mon = cx >= mp.x && cx < mp.x + ms.width as i32;
                 let bottom = mp.y + ms.height as i32;
-                let at_edge = on_mon && cy >= bottom - 2;
+                // games hide the pointer: never peek over them
+                let at_edge = on_mon && cy >= bottom - 2 && platform::cursor_visible();
+                if at_edge {
+                    self.edge_since.get_or_insert(now);
+                } else {
+                    self.edge_since = None;
+                }
+                let rested = self.edge_since.map(|t| now.duration_since(t) > Duration::from_millis(250)).unwrap_or(false);
                 let bar_top = bottom - (crate::ui::dock::DOCK_H as f64 * msc) as i32;
                 let over_bar = on_mon && cy >= bar_top - 4;
                 let was = self.dock_peek;
-                self.dock_peek = at_edge || (was && (over_bar || dk.popup_open()));
+                self.dock_peek = rested || (was && (over_bar || dk.popup_open()));
                 if self.dock_peek && !was {
                     platform::keep_topmost(w.hwnd);
                 }
