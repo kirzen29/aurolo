@@ -1209,8 +1209,10 @@ impl ApplicationHandler for App {
         };
         // visibility rules
         let hide_for_fs = self.fullscreen_app;
+        // our own full-screen lyrics (Constellation etc.): nothing else on top of it
+        let lyrics_open = self.fs.is_some();
         if let Some((w, _)) = &mut self.widget {
-            w.set_visible(!hide_for_fs);
+            w.set_visible(!hide_for_fs && !lyrics_open);
         }
         if let Some((w, isl)) = &mut self.island {
             // full-screen game / video: take the island's window away completely (an
@@ -1245,7 +1247,7 @@ impl ApplicationHandler for App {
             } else {
                 self.dock_peek = false;
             }
-            w.set_visible(show);
+            w.set_visible(show && !lyrics_open);
         }
         if let Some((w, _)) = &mut self.edge {
             let want = !hide_for_fs && self.fs.is_none() && (playing || !self.cfg.edge_only_when_playing);
