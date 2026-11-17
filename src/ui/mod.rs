@@ -4,6 +4,7 @@ pub mod dock;
 pub mod edge;
 pub mod fullscreen;
 pub mod island;
+pub mod island_tabs;
 pub mod lyrics_view;
 pub mod widget;
 

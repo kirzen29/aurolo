@@ -9,9 +9,10 @@ use crate::platform;
 use crate::state::*;
 
 pub fn spawn(shared: Arc<Shared>, city: String, ics: String) {
-    if !city.trim().is_empty() {
+    *shared.weather_city.write() = city.trim().to_string();
+    {
         let s = shared.clone();
-        std::thread::Builder::new().name("weather".into()).spawn(move || weather_loop(s, city)).unwrap();
+        std::thread::Builder::new().name("weather".into()).spawn(move || weather_loop(s)).unwrap();
     }
     if !ics.trim().is_empty() {
         let s = shared.clone();
@@ -48,12 +49,26 @@ fn enc(s: &str) -> String {
         .collect()
 }
 
-fn weather_loop(shared: Arc<Shared>, city: String) {
+fn weather_loop(shared: Arc<Shared>) {
     let a = agent();
     let mut coords: Option<(f64, f64, String)> = None;
+    let mut for_city = String::new();
+    let mut last_fetch: Option<std::time::Instant> = None;
     loop {
+        let city = shared.weather_city.read().trim().to_string();
+        if city.is_empty() {
+            std::thread::sleep(Duration::from_secs(2));
+            continue;
+        }
+        // city changed: look it up again and refresh right away
+        if city != for_city {
+            for_city = city.clone();
+            coords = None;
+            last_fetch = None;
+            shared.misc.write().weather = None;
+        }
         if coords.is_none() {
-            let url = format!("https://geocoding-api.open-meteo.com/v1/search?name={}&count=1", enc(city.trim()));
+            let url = format!("https://geocoding-api.open-meteo.com/v1/search?name={}&count=1", enc(&city));
             if let Ok(mut r) = a.get(&url).call() {
                 if let Ok(v) = r.body_mut().read_json::<serde_json::Value>() {
                     if let Some(x) = v["results"].get(0) {
@@ -66,25 +81,83 @@ fn weather_loop(shared: Arc<Shared>, city: String) {
                 }
             }
         }
-        if let Some((lat, lon, name)) = &coords {
+        let due = last_fetch.map(|t| t.elapsed() > Duration::from_secs(900)).unwrap_or(true);
+        if let (Some((lat, lon, name)), true) = (&coords, due) {
+            last_fetch = Some(std::time::Instant::now());
             let url = format!(
-                "https://api.open-meteo.com/v1/forecast?latitude={lat:.3}&longitude={lon:.3}&current=temperature_2m,weather_code,is_day&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1"
+                "https://api.open-meteo.com/v1/forecast?latitude={lat:.3}&longitude={lon:.3}\
+                 &current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code,is_day\
+                 &hourly=temperature_2m,weather_code,precipitation_probability,is_day\
+                 &daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max,sunrise,sunset\
+                 &timezone=auto&forecast_days=6"
             );
             if let Ok(mut r) = a.get(&url).call() {
                 if let Ok(v) = r.body_mut().read_json::<serde_json::Value>() {
+                    let f = |x: &serde_json::Value| x.as_f64().unwrap_or(0.0) as f32;
+                    let i = |x: &serde_json::Value| x.as_i64().unwrap_or(0) as i32;
+                    let hm = |x: &serde_json::Value| x.as_str().and_then(|s| s.split('T').nth(1)).unwrap_or("").to_string();
+                    // hourly: from the current hour, next 24
+                    let now_s = v["current"]["time"].as_str().unwrap_or("").get(..13).unwrap_or("").to_string();
+                    let times = v["hourly"]["time"].as_array().cloned().unwrap_or_default();
+                    let start = times.iter().position(|t| t.as_str().map(|s| s.starts_with(&now_s)).unwrap_or(false)).unwrap_or(0);
+                    let mut hourly = vec![];
+                    for k in start..(start + 24).min(times.len()) {
+                        let hr = times[k].as_str().and_then(|s| s.get(11..13)).and_then(|s| s.parse().ok()).unwrap_or(0);
+                        hourly.push((
+                            hr,
+                            f(&v["hourly"]["temperature_2m"][k]),
+                            i(&v["hourly"]["weather_code"][k]),
+                            i(&v["hourly"]["precipitation_probability"][k]),
+                            i(&v["hourly"]["is_day"][k]) == 1,
+                        ));
+                    }
+                    let mut daily = vec![];
+                    let days = v["daily"]["time"].as_array().cloned().unwrap_or_default();
+                    for k in 0..days.len() {
+                        let wd = days[k]
+                            .as_str()
+                            .and_then(|s| {
+                                let p: Vec<i64> = s.split('-').filter_map(|x| x.parse().ok()).collect();
+                                if p.len() == 3 { Some(((platform::days_from_civil(p[0], p[1], p[2]) + 4).rem_euclid(7)) as u32) } else { None }
+                            })
+                            .unwrap_or(0);
+                        daily.push((
+                            wd,
+                            f(&v["daily"]["temperature_2m_max"][k]),
+                            f(&v["daily"]["temperature_2m_min"][k]),
+                            i(&v["daily"]["weather_code"][k]),
+                            i(&v["daily"]["precipitation_probability_max"][k]),
+                        ));
+                    }
+                    // air quality (separate endpoint)
+                    let aqi = a
+                        .get(&format!("https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat:.3}&longitude={lon:.3}&current=us_aqi"))
+                        .call()
+                        .ok()
+                        .and_then(|mut r| r.body_mut().read_json::<serde_json::Value>().ok())
+                        .and_then(|v| v["current"]["us_aqi"].as_f64())
+                        .map(|x| x.round() as i32);
                     let w = Weather {
                         city: name.clone(),
-                        temp: v["current"]["temperature_2m"].as_f64().unwrap_or(0.0) as f32,
-                        code: v["current"]["weather_code"].as_i64().unwrap_or(0) as i32,
+                        temp: f(&v["current"]["temperature_2m"]),
+                        code: i(&v["current"]["weather_code"]),
                         is_day: v["current"]["is_day"].as_i64().unwrap_or(1) == 1,
-                        hi: v["daily"]["temperature_2m_max"][0].as_f64().unwrap_or(0.0) as f32,
-                        lo: v["daily"]["temperature_2m_min"][0].as_f64().unwrap_or(0.0) as f32,
+                        hi: f(&v["daily"]["temperature_2m_max"][0]),
+                        lo: f(&v["daily"]["temperature_2m_min"][0]),
+                        feels: f(&v["current"]["apparent_temperature"]),
+                        humidity: i(&v["current"]["relative_humidity_2m"]),
+                        wind: f(&v["current"]["wind_speed_10m"]),
+                        sunrise: hm(&v["daily"]["sunrise"][0]),
+                        sunset: hm(&v["daily"]["sunset"][0]),
+                        aqi,
+                        hourly,
+                        daily,
                     };
                     shared.misc.write().weather = Some(w);
                 }
             }
         }
-        std::thread::sleep(Duration::from_secs(if coords.is_some() { 900 } else { 120 }));
+        std::thread::sleep(Duration::from_secs(if coords.is_some() { 5 } else { 30 }));
     }
 }
 

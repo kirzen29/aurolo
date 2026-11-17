@@ -77,7 +77,30 @@ pub fn seed(shared: &Shared) {
     ];
     m.notif_access = Some(true);
     m.wifi = Some("Home Network".into());
-    m.weather = Some(Weather { city: "Kyoto".into(), temp: 18.0, hi: 21.0, lo: 12.0, code: 2, is_day: true });
+    *shared.weather_city.write() = "Kyoto".into();
+    m.weather = Some(Weather {
+        city: "Kyoto".into(),
+        temp: 18.0,
+        hi: 21.0,
+        lo: 12.0,
+        code: 2,
+        is_day: true,
+        feels: 17.0,
+        humidity: 62,
+        wind: 9.0,
+        sunrise: "06:21".into(),
+        sunset: "16:51".into(),
+        aqi: Some(38),
+        hourly: (0..24)
+            .map(|k| {
+                let hr = (10 + k) % 24;
+                let temp = 14.0 + 7.0 * (((hr as f32) - 8.0) / 24.0 * std::f32::consts::TAU).sin().max(-0.6);
+                let code = if (15..19).contains(&hr) { 61 } else if hr % 5 == 0 { 3 } else { 1 };
+                (hr, temp, code, if code == 61 { 70 } else { 10 }, (7..17).contains(&hr))
+            })
+            .collect(),
+        daily: vec![(3, 21.0, 12.0, 2, 10), (4, 19.0, 11.0, 61, 80), (5, 17.0, 9.0, 3, 30), (6, 20.0, 10.0, 0, 0), (0, 22.0, 12.0, 1, 5)],
+    });
     m.events = vec![
         Event { start: unix + 50 * 60, title: "Design review".into(), all_day: false },
         Event { start: unix + 5 * 3600, title: "Gym".into(), all_day: false },

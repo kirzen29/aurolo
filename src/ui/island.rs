@@ -31,6 +31,10 @@ enum Tab {
     Tools,
     Daily,
     Social,
+    Game,
+    Notes,
+    Plan,
+    Weather,
     Settings,
 }
 
@@ -78,6 +82,8 @@ pub enum IslandAction {
     Fullscreen,
     WantFocus(bool),
     Cfg(CfgChange),
+    /// Weather city typed in the Weather tab: save it to the settings file.
+    SaveCity(String),
 }
 
 enum Res {
@@ -120,8 +126,10 @@ pub struct Island {
     rem_input: String,
     rem_edit: bool,
     power_confirm: Option<(u8, f32)>,
-    /// Debug: AUROLO_DEBUG_TAB=media|system|tools|daily|social|settings keeps the island open on that tab.
+    /// Debug: AUROLO_DEBUG_TAB=media|system|tools|daily|social|game|notes|plan|weather|settings keeps the island open on that tab.
     debug_hold: bool,
+    /// Game, Notes, Plan and Weather tabs.
+    extras: crate::ui::island_tabs::Extras,
 }
 
 impl Island {
@@ -166,6 +174,7 @@ impl Island {
             rem_edit: false,
             power_confirm: None,
             debug_hold: false,
+            extras: crate::ui::island_tabs::Extras::new(),
         }
         .with_debug_tab()
     }
@@ -177,6 +186,10 @@ impl Island {
             "tools" => Tab::Tools,
             "daily" => Tab::Daily,
             "social" => Tab::Social,
+            "game" => Tab::Game,
+            "notes" => Tab::Notes,
+            "plan" => Tab::Plan,
+            "weather" => Tab::Weather,
             "settings" => Tab::Settings,
             _ => return self,
         };
@@ -196,6 +209,7 @@ impl Island {
     pub fn close(&mut self, t: f32) {
         self.launcher = false;
         self.rem_edit = false;
+        self.extras.stop_editing();
         self.query.clear();
         self.set_mode(Mode::Compact, t);
     }
@@ -224,7 +238,7 @@ impl Island {
         let media = shared.media.read().clone();
         let audio = shared.audio.lock().clone();
         let pal = media.palette();
-        let was_focus = self.launcher || self.rem_edit;
+        let was_focus = self.launcher || self.rem_edit || self.extras.editing();
 
         // ---- reminders coming due
         let now_unix = platform::unix_now();
@@ -257,6 +271,9 @@ impl Island {
             let Some(h) = next else { break };
             if self.focus && matches!(h, Hud::Notification { .. }) {
                 continue;
+            }
+            if self.hidden && self.extras.quiet_gaming() {
+                continue; // quiet while gaming: don't save popups for later either
             }
             let dur = match h {
                 Hud::Notification { .. } => 5.0,
@@ -421,7 +438,7 @@ impl Island {
             Some([hit[0] - 4.0, hit[1] - 6.0, hit[2] + 8.0, hit[3] + 12.0])
         };
 
-        let want_focus = self.launcher || self.rem_edit;
+        let want_focus = self.launcher || self.rem_edit || self.extras.editing();
         if want_focus != was_focus && matches!(action, IslandAction::None) {
             action = IslandAction::WantFocus(want_focus);
         }
@@ -440,6 +457,9 @@ impl Island {
                     252.0
                 } else if self.timer_end.is_some() || self.stopwatch.is_some() {
                     220.0
+                } else if let Some(n) = self.extras.next_up() {
+                    let tw = f.measure(&Text::new(n, 0.0, 0.0, 12.0, WHITE)).0;
+                    (176.0 + tw + 24.0).min(420.0)
                 } else {
                     176.0
                 };
@@ -529,6 +549,11 @@ impl Island {
                 String::new()
             };
             f.scene.text(Text::new(right, x + w - 16.0, cy - 9.0, 13.5, with_a(WHITE, 0.7 * a)).right());
+            // next class or countdown, between the clock and the weather
+            if let Some(n) = self.extras.next_up() {
+                let nt = f.fit(Text::new(n, x + w / 2.0 + 4.0, cy - 8.5, 12.0, with_a(WHITE, 0.75 * a)).center(), (w - 150.0).max(40.0));
+                f.scene.text(nt);
+            }
         }
         // keep-awake indicator, centred in the pill
         if self.keep_awake {
@@ -720,21 +745,38 @@ impl Island {
         // tabs
         let mut tx = x + 22.0;
         let ty = y + 18.0;
-        for (tab, name) in [
-            (Tab::Media, "Now Playing"),
-            (Tab::System, "System"),
-            (Tab::Tools, "Tools"),
-            (Tab::Daily, "Daily"),
-            (Tab::Social, "Social"),
+        for (tab, name, g) in [
+            (Tab::Media, "Now Playing", ic::MUSIC),
+            (Tab::System, "System", ic::CHIP),
+            (Tab::Tools, "Tools", ic::STOPWATCH),
+            (Tab::Daily, "Daily", ic::BELL),
+            (Tab::Social, "Social", ic::CHAT),
+            (Tab::Game, "Game", '\u{E7FC}'),
+            (Tab::Notes, "Notes", '\u{E70B}'),
+            (Tab::Plan, "Plan", ic::CALENDAR),
+            (Tab::Weather, "Weather", '\u{E706}'),
         ] {
-            let (c, bw) = f.pill(input, name, tx, ty, 30.0, self.tab == tab && !self.launcher_typing(), with_a(WHITE, a));
-            if c {
+            let on = self.tab == tab && !self.launcher_typing();
+            // the open tab is a pill with its name; the others are just icons
+            let label = Text::new(name, 0.0, 0.0, 12.5, WHITE).weight(600);
+            let bw = if on { f.measure(&label).0 + 44.0 } else { 32.0 };
+            let r = [tx, ty, bw, 30.0];
+            let hov = input.over(r);
+            let bg = if on { with_a(WHITE, 0.9 * a) } else if hov { [1.0, 1.0, 1.0, 0.12 * a] } else { [1.0, 1.0, 1.0, 0.05 * a] };
+            f.scene.shape(Shape::rect(tx, ty, bw, 30.0, 15.0, bg));
+            let fg = if on { [0.04, 0.03, 0.06, a] } else { with_a(WHITE, if hov { 0.95 } else { 0.7 } * a) };
+            f.icon(g, tx + 16.0, ty + 15.0, 12.5, fg);
+            if on {
+                f.scene.text(Text { x: tx + 30.0, y: ty + 7.0, color: fg, ..label });
+            }
+            if input.clicked(r) && !on {
                 self.tab = tab;
                 self.launcher = false;
                 self.rem_edit = false;
+                self.extras.stop_editing();
                 self.query.clear();
             }
-            tx += bw + 6.0;
+            tx += bw + 5.0;
         }
         // search box
         let sw = 196.0;
@@ -745,6 +787,7 @@ impl Island {
             self.tab = Tab::Settings;
             self.launcher = false;
             self.rem_edit = false;
+            self.extras.stop_editing();
         }
         if f.icon_button(input, ic::POWER, gx - 32.0, ty + 15.0, 13.0, with_a(WHITE, 0.75 * a)) {
             self.tab = Tab::Daily;
@@ -761,6 +804,7 @@ impl Island {
         if input.clicked(srect) {
             self.launcher = true;
             self.rem_edit = false;
+            self.extras.stop_editing();
         }
         if self.launcher {
             self.caret_t += f.dt;
@@ -800,6 +844,14 @@ impl Island {
             Tab::Tools => self.tab_tools(f, input, shared, pal, area, a, cfg),
             Tab::Social => self.tab_social(f, input, shared, area, a, cfg),
             Tab::Daily => self.tab_daily(f, input, shared, pal, area, a),
+            Tab::Game => self.extras.tab_game(f, input, shared, pal, area, a),
+            Tab::Notes => self.extras.tab_notes(f, input, pal, area, a),
+            Tab::Plan => self.extras.tab_plan(f, input, pal, area, a),
+            Tab::Weather => {
+                if let Some(crate::ui::island_tabs::ExtraAction::SaveCity(c)) = self.extras.tab_weather(f, input, shared, pal, area, a) {
+                    act = Some(IslandAction::SaveCity(c));
+                }
+            }
             Tab::Settings => {
                 if let Some(c) = self.tab_settings(f, input, pal, area, a, cfg) {
                     act = Some(IslandAction::Cfg(c));
@@ -1388,7 +1440,7 @@ fn battery_icon(f: &mut Frame, x: f32, y: f32, frac: f32, col: Rgba, a: f32, cha
     }
 }
 
-fn weather_icon(f: &mut Frame, cx: f32, cy: f32, r: f32, code: i32, day: bool, a: f32) {
+pub(crate) fn weather_icon(f: &mut Frame, cx: f32, cy: f32, r: f32, code: i32, day: bool, a: f32) {
     let sun = rgba(255, 204, 0, a);
     let cloud = with_a(WHITE, 0.9 * a);
     match code {

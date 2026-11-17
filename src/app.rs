@@ -806,6 +806,10 @@ impl App {
                     }
                 }
                 IslandAction::Cfg(c) => self.apply_cfg(el, c),
+                IslandAction::SaveCity(c) => {
+                    self.cfg.weather_city = c;
+                    self.cfg.save();
+                }
                 IslandAction::None => {}
             }
             return;

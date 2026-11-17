@@ -205,6 +205,18 @@ pub struct Weather {
     pub lo: f32,
     pub code: i32,
     pub is_day: bool,
+    pub feels: f32,
+    pub humidity: i32,
+    pub wind: f32,
+    /// "06:42"
+    pub sunrise: String,
+    pub sunset: String,
+    /// US AQI, if available.
+    pub aqi: Option<i32>,
+    /// Next 24 h: (local hour 0..23, temp, code, rain chance %, is_day)
+    pub hourly: Vec<(u32, f32, i32, i32, bool)>,
+    /// Next days: (weekday 0=Sun, hi, lo, code, rain chance %)
+    pub daily: Vec<(u32, f32, f32, i32, i32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -266,6 +278,8 @@ pub struct Shared {
     pub huds: Mutex<VecDeque<Hud>>,
     pub media_tx: Mutex<Option<Sender<MediaCmd>>>,
     pub lyrics_offset: RwLock<f64>,
+    /// City for the weather service; changed from the island's Weather tab.
+    pub weather_city: RwLock<String>,
 }
 
 impl Shared {
@@ -279,6 +293,7 @@ impl Shared {
             huds: Mutex::new(VecDeque::new()),
             media_tx: Mutex::new(None),
             lyrics_offset: RwLock::new(0.0),
+            weather_city: RwLock::new(String::new()),
         })
     }
     pub fn hud(&self, h: Hud) {
