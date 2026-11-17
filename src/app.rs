@@ -127,6 +127,10 @@ pub struct App {
     dock_rc: Option<windows::Win32::Foundation::RECT>,
     /// We hid the Windows taskbar (so we know to bring it back).
     taskbar_hidden: bool,
+    /// When to re-apply the wallpaper (fixes Windows' black desktop after sign-in or
+    /// an Explorer restart).
+    wall_fix_at: Vec<Instant>,
+    desktop_id: isize,
     /// Dock shown over a full-screen app because the mouse went to the bottom edge.
     dock_peek: bool,
     gpu_tries: u32,
@@ -182,6 +186,8 @@ impl App {
             dock_rc: None,
             taskbar_hidden: false,
             dock_peek: false,
+            wall_fix_at: vec![Instant::now() + Duration::from_secs(4), Instant::now() + Duration::from_secs(20)],
+            desktop_id: crate::desktop::desktop_window_id(),
             gpu_tries: 0,
             gpu_retry_at: None,
             hk_warned: (false, false),
@@ -1152,6 +1158,12 @@ impl ApplicationHandler for App {
         self.handle_events(el);
         let now = Instant::now();
 
+        if self.wall_fix_at.iter().any(|t| now >= *t) {
+            self.wall_fix_at.retain(|t| now < *t);
+            if !crate::demo::is_demo() {
+                crate::desktop::reapply_wallpaper(&self.cfg.wallpaper_dir);
+            }
+        }
         if now.duration_since(self.last_taskbar_sync) > Duration::from_millis(700) {
             self.last_taskbar_sync = now;
             self.sync_windows_taskbar();
@@ -1167,6 +1179,12 @@ impl ApplicationHandler for App {
                 self.register_hotkeys();
             }
             self.place_dock();
+            // Explorer restarted: the desktop is new and may come up black
+            let did = crate::desktop::desktop_window_id();
+            if did != 0 && did != self.desktop_id {
+                self.desktop_id = did;
+                self.wall_fix_at.push(now + Duration::from_secs(3));
+            }
             for w in [
                 self.island.as_ref().map(|x| &x.0),
                 self.widget.as_ref().map(|x| &x.0),

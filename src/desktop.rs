@@ -502,6 +502,31 @@ pub fn set_wallpaper(path: &std::path::Path) {
     }
 }
 
+/// Windows sometimes shows a black desktop after sign-in (it couldn't read the wallpaper
+/// yet, e.g. from a second drive). Apply the current wallpaper again so it repaints;
+/// if that file is gone, use the first image in the wallpaper folder.
+pub fn reapply_wallpaper(cfg_dir: &str) {
+    let cur = current_wallpaper();
+    let path = if !cur.is_empty() && std::path::Path::new(&cur).exists() {
+        Some(std::path::PathBuf::from(cur))
+    } else {
+        list_wallpapers(&wallpaper_dir(cfg_dir)).into_iter().next()
+    };
+    let Some(p) = path else { return };
+    let _ = std::thread::Builder::new().name("wallpaper-fix".into()).spawn(move || {
+        let w = crate::platform::wide(&p.to_string_lossy());
+        unsafe {
+            let _ = SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0, Some(w.as_ptr() as *mut _), SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+        }
+        crate::gfx::log(&format!("wallpaper re-applied: {}", p.display()));
+    });
+}
+
+/// Handle of the desktop window; it changes when Windows Explorer restarts.
+pub fn desktop_window_id() -> isize {
+    unsafe { FindWindowW(&HSTRING::from("Progman"), PCWSTR::null()).map(|h| h.0 as isize).unwrap_or(0) }
+}
+
 /// Small thumbnail (longest side `max`) of an image file, as RGBA.
 pub fn thumbnail(path: &std::path::Path, max: u32) -> Option<(u32, u32, Vec<u8>)> {
     let img = image::open(path).ok()?;
