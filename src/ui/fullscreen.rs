@@ -22,45 +22,96 @@ pub struct Fullscreen {
     last_scroll: f32,
     toast: Option<(String, f32)>,
     eq: Vec<f32>,
+    peaks: Vec<f32>,
 }
 
 impl Fullscreen {
     pub fn new(style: LyricStyle) -> Self {
-        Fullscreen { view: LyricView::new(style), ui_vis: 1.0, last_move: 0.0, last_scroll: -9.0, toast: None, eq: vec![] }
+        Fullscreen { view: LyricView::new(style), ui_vis: 1.0, last_move: 0.0, last_scroll: -9.0, toast: None, eq: vec![], peaks: vec![] }
     }
 
-    /// Soft equalizer along the bottom edge: thin bars rising from the bottom, tinted by
-    /// the album colours, mirrored from the centre so bass sits in the middle.
+    /// Visualiser along the bottom edge: smooth rolling curves shaped by the music.
+    /// The spectrum is gathered into a dozen soft control points per side (bass in the
+    /// middle, highs toward the edges), levelled per band so the whole width moves, then
+    /// drawn as a filled curve with a gentle crest line. A softer second curve in the
+    /// other album colour drifts behind it. Both swell a little on the beat.
     fn equalizer(&mut self, f: &mut Frame, pal: &Palette, audio: &AudioState, playing: bool) {
-        let n = 72usize;
-        if self.eq.len() != n {
-            self.eq = vec![0.0; n];
+        const K: usize = 12; // control points per half
+        if self.eq.len() != K || self.peaks.len() != BANDS {
+            self.eq = vec![0.0; K];
+            self.peaks = vec![0.15; BANDS];
+        }
+        // level each band against its own slowly-decaying peak
+        let mut lev = [0.0f32; BANDS];
+        for i in 0..BANDS {
+            let raw = audio.bands[i].clamp(0.0, 1.0);
+            self.peaks[i] = (self.peaks[i] * (1.0 - 0.12 * f.dt)).max(raw).max(0.08);
+            lev[i] = if playing { (raw / self.peaks[i]).clamp(0.0, 1.0) } else { 0.0 };
+        }
+        // gather bands into K log-spaced control points, smooth them over time
+        for k in 0..K {
+            let lo = 1 + ((k as f32 / K as f32).powf(1.6) * (BANDS - 2) as f32) as usize;
+            let hi = (1 + (((k + 1) as f32 / K as f32).powf(1.6) * (BANDS - 2) as f32) as usize).max(lo + 1).min(BANDS);
+            let avg = lev[lo..hi].iter().sum::<f32>() / (hi - lo) as f32;
+            let target = avg.powf(1.5);
+            let rate = if target > self.eq[k] { 10.0 } else { 3.5 };
+            self.eq[k] = approach(self.eq[k], target, rate, f.dt);
         }
         let (w, h) = (f.w, f.h);
-        let half = n / 2;
-        for i in 0..n {
-            // distance from the centre picks the band: low frequencies in the middle
-            let d = (i as i32 - half as i32).unsigned_abs() as usize;
-            let band = (d * (BANDS - 1) / half.max(1)).min(BANDS - 1);
-            let target = if playing { audio.bands[band].clamp(0.0, 1.0) } else { 0.0 };
-            let cur = self.eq[i];
-            // fast rise, slow fall, like a real meter
-            let rate = if target > cur { 22.0 } else { 5.0 };
-            self.eq[i] = approach(cur, target, rate, f.dt);
+        let pulse = audio.pulse();
+        let t = f.t;
+        let cp = &self.eq;
+        // smooth value across the width (Catmull-Rom through the mirrored control points)
+        let at = |u: f32, shift: f32| -> f32 {
+            let d = (((u - 0.5).abs() * 2.0) + shift).clamp(0.0, 1.0);
+            let x = d * (K - 1) as f32;
+            let i = x.floor() as i32;
+            let fr = x - i as f32;
+            let g = |j: i32| cp[j.clamp(0, K as i32 - 1) as usize];
+            let (p0, p1, p2, p3) = (g(i - 1), g(i), g(i + 1), g(i + 2));
+            let v = 0.5
+                * (2.0 * p1
+                    + (-p0 + p2) * fr
+                    + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * fr * fr
+                    + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * fr * fr * fr);
+            // settle toward the corners
+            v.max(0.0) * (1.0 - d.powf(2.5) * 0.7)
+        };
+        let max_h = h * 0.085;
+        let base = 2.0 + 1.5 * (t * 1.1).sin().abs();
+        let c_back = mix(pal.secondary, WHITE, 0.25);
+        let c_front = mix(pal.primary, WHITE, 0.35);
+        let cols = 240usize;
+        let mut back = Vec::with_capacity(cols + 1);
+        let mut front = Vec::with_capacity(cols + 1);
+        for k in 0..=cols {
+            let u = k as f32 / cols as f32;
+            let sway = 0.06 * (u * 7.0 - t * 0.7).sin();
+            let vb = at(u, sway) * 1.1;
+            let vf = at(u, 0.0);
+            back.push(h - (base + max_h * vb * (1.0 + 0.2 * pulse)));
+            front.push(h - (base + max_h * vf * (1.0 + 0.3 * pulse)));
         }
-        let gap = 3.0;
-        let bw = (w - gap * (n as f32 - 1.0)) / n as f32;
-        let max_h = h * 0.11;
-        for (i, v) in self.eq.iter().enumerate() {
-            let bh = 2.0 + max_h * v.powf(0.85);
-            let x = i as f32 * (bw + gap);
-            let t = i as f32 / (n - 1) as f32;
-            let c = mix(pal.primary, pal.secondary, (t * 2.0 - 1.0).abs());
-            let c = mix(c, WHITE, 0.25);
-            f.scene.shape(Shape::rect(x, h - bh, bw, bh + 4.0, bw.min(4.0) / 2.0, with_a(c, 0.0)).grad(
-                with_a(c, 0.30),
-                std::f32::consts::FRAC_PI_2,
-            ));
+        // filled bodies: pixel-snapped columns (no seams), fading upward
+        let mut fill = |tops: &Vec<f32>, c: Rgba, a_top: f32, a_bot: f32| {
+            for k in 0..cols {
+                let x0 = (k as f32 * w / cols as f32).round();
+                let x1 = ((k + 1) as f32 * w / cols as f32).round();
+                let y = (tops[k] + tops[k + 1]) / 2.0;
+                f.scene.shape(Shape::rect(x0, y, x1 - x0, h - y, 0.0, with_a(c, a_top)).grad(with_a(c, a_bot), std::f32::consts::FRAC_PI_2));
+            }
+        };
+        fill(&back, c_back, 0.05, 0.14);
+        fill(&front, c_front, 0.08, 0.22);
+        // crest lines
+        for k in 0..cols {
+            let (x0, x1) = (k as f32 * w / cols as f32, (k + 1) as f32 * w / cols as f32);
+            let mut lb = Shape::line(x0, back[k], x1, back[k + 1], 1.0, with_a(c_back, 0.30));
+            lb.c1 = lb.c0;
+            f.scene.shape(lb);
+            let mut lf = Shape::line(x0, front[k], x1, front[k + 1], 1.6, with_a(c_front, 0.6));
+            lf.c1 = lf.c0;
+            f.scene.shape(lf);
         }
     }
 
