@@ -1,4 +1,5 @@
-//! Fullscreen lyrics: constellation / karaoke / 3D drift with auto-hiding controls.
+//! Fullscreen lyrics: a calm, uncluttered view over the song's own artwork.
+//! Mouse wheel (or ←/→) switches style; controls appear only while the mouse moves.
 
 use crate::anim::*;
 use crate::config::LyricStyle;
@@ -18,12 +19,55 @@ pub struct Fullscreen {
     pub view: LyricView,
     ui_vis: f32,
     last_move: f32,
+    last_scroll: f32,
     toast: Option<(String, f32)>,
+    eq: Vec<f32>,
 }
 
 impl Fullscreen {
     pub fn new(style: LyricStyle) -> Self {
-        Fullscreen { view: LyricView::new(style), ui_vis: 1.0, last_move: 0.0, toast: None }
+        Fullscreen { view: LyricView::new(style), ui_vis: 1.0, last_move: 0.0, last_scroll: -9.0, toast: None, eq: vec![] }
+    }
+
+    /// Soft equalizer along the bottom edge: thin bars rising from the bottom, tinted by
+    /// the album colours, mirrored from the centre so bass sits in the middle.
+    fn equalizer(&mut self, f: &mut Frame, pal: &Palette, audio: &AudioState, playing: bool) {
+        let n = 72usize;
+        if self.eq.len() != n {
+            self.eq = vec![0.0; n];
+        }
+        let (w, h) = (f.w, f.h);
+        let half = n / 2;
+        for i in 0..n {
+            // distance from the centre picks the band: low frequencies in the middle
+            let d = (i as i32 - half as i32).unsigned_abs() as usize;
+            let band = (d * (BANDS - 1) / half.max(1)).min(BANDS - 1);
+            let target = if playing { audio.bands[band].clamp(0.0, 1.0) } else { 0.0 };
+            let cur = self.eq[i];
+            // fast rise, slow fall, like a real meter
+            let rate = if target > cur { 22.0 } else { 5.0 };
+            self.eq[i] = approach(cur, target, rate, f.dt);
+        }
+        let gap = 3.0;
+        let bw = (w - gap * (n as f32 - 1.0)) / n as f32;
+        let max_h = h * 0.11;
+        for (i, v) in self.eq.iter().enumerate() {
+            let bh = 2.0 + max_h * v.powf(0.85);
+            let x = i as f32 * (bw + gap);
+            let t = i as f32 / (n - 1) as f32;
+            let c = mix(pal.primary, pal.secondary, (t * 2.0 - 1.0).abs());
+            let c = mix(c, WHITE, 0.25);
+            f.scene.shape(Shape::rect(x, h - bh, bw, bh + 4.0, bw.min(4.0) / 2.0, with_a(c, 0.0)).grad(
+                with_a(c, 0.30),
+                std::f32::consts::FRAC_PI_2,
+            ));
+        }
+    }
+
+    fn set_style(&mut self, s: LyricStyle, t: f32) -> FsAction {
+        self.view.style = s;
+        self.toast = Some((s.name().into(), t));
+        FsAction::StyleChanged(s)
     }
 
     pub fn draw(&mut self, f: &mut Frame, input: &Input, shared: &Shared) -> FsAction {
@@ -38,31 +82,33 @@ impl Fullscreen {
         if input.moved || input.pressed {
             self.last_move = f.t;
         }
-        let show = f.t - self.last_move < 2.8;
+        let show = f.t - self.last_move < 2.4;
         self.ui_vis = approach(self.ui_vis, if show { 1.0 } else { 0.0 }, 8.0, f.dt);
 
         self.view.draw(f, [0.0, 0.0, w, h], &ly, &media, &pal, &audio, pos, true);
+        self.equalizer(f, &pal, &audio, media.playing);
         f.scene.layer();
-        if self.view.style == crate::config::LyricStyle::Constellation {
-            star_clock(f, &media, &pal, &audio);
+        if self.view.style == LyricStyle::Constellation {
+            corner_clock(f, &pal);
         }
 
-        // keyboard
+        // ---- input: wheel / arrows switch style, Esc closes
+        if input.scroll.abs() > 0.01 && f.t - self.last_scroll > 0.32 {
+            self.last_scroll = f.t;
+            let s = if input.scroll < 0.0 { self.view.style.next() } else { self.view.style.prev() };
+            action = self.set_style(s, f.t);
+        }
+        if input.key(Key::Right) || input.key(Key::Tab) {
+            action = self.set_style(self.view.style.next(), f.t);
+        }
+        if input.key(Key::Left) {
+            action = self.set_style(self.view.style.prev(), f.t);
+        }
         if input.key(Key::Esc) {
             action = FsAction::Close;
         }
         if input.key(Key::Space) {
             shared.media_cmd(MediaCmd::PlayPause);
-        }
-        if input.key(Key::Right) || input.key(Key::Tab) {
-            self.view.style = self.view.style.next();
-            action = FsAction::StyleChanged(self.view.style);
-            self.toast = Some((self.view.style.name().into(), f.t));
-        }
-        if input.key(Key::Left) {
-            self.view.style = self.view.style.next().next();
-            action = FsAction::StyleChanged(self.view.style);
-            self.toast = Some((self.view.style.name().into(), f.t));
         }
         if input.key(Key::BracketL) {
             action = FsAction::Offset(-0.25);
@@ -73,103 +119,83 @@ impl Fullscreen {
             self.toast = Some(("Lyrics later".into(), f.t));
         }
 
-        // track info (always, subtle) bottom-left
-        let a = 0.55 + 0.45 * self.ui_vis;
-        let base_y = h - 92.0;
+        // ---- track info, bottom-left (quiet)
+        let a = 0.5 + 0.45 * self.ui_vis;
+        let base_y = h - 86.0;
         let mut tx = 44.0;
         if let Some(art) = &media.art {
             let (k, _) = f.ensure_art(art);
-            f.scene.shape(Shape::glow(44.0 + 28.0, base_y + 28.0, 50.0, with_a(pal.primary, 0.3 * a), 2.0));
-            f.scene.image(ImageDraw::new(k, 44.0, base_y, 56.0, 56.0, 12.0).opacity(a));
-            tx += 70.0;
+            f.scene.image(ImageDraw::new(k, 44.0, base_y, 48.0, 48.0, 10.0).opacity(a));
+            tx += 62.0;
         }
         if media.active {
-            let t = f.fit(Text::new(&media.title, tx, base_y + 6.0, 18.0, with_a(WHITE, a)).weight(650), w * 0.35);
+            let t = f.fit(Text::new(&media.title, tx, base_y + 4.0, 16.0, with_a(WHITE, 0.92 * a)).weight(650), w * 0.32);
             f.scene.text(t);
-            let ar = f.fit(Text::new(&media.artist, tx, base_y + 30.0, 14.0, with_a(WHITE, 0.6 * a)), w * 0.35);
+            let ar = f.fit(Text::new(&media.artist, tx, base_y + 26.0, 13.0, with_a(WHITE, 0.55 * a)), w * 0.32);
             f.scene.text(ar);
         }
 
         if self.ui_vis > 0.01 {
             let v = self.ui_vis;
-            // progress
+            // progress + controls, bottom centre
             if media.duration > 0.0 {
-                let bw = w * 0.36;
+                let bw = w * 0.30;
                 let bx = (w - bw) / 2.0;
-                let by = h - 54.0;
+                let by = h - 50.0;
                 let frac = (media.pos_now() / media.duration) as f32;
                 let r = [bx, by - 8.0, bw, 20.0];
-                f.bar(bx, by, bw, 4.0, frac, with_a(pal.primary, v), with_a(pal.secondary, v));
+                f.scene.shape(Shape::rect(bx, by, bw, 3.0, 1.5, with_a(WHITE, 0.16 * v)));
+                f.scene.shape(Shape::rect(bx, by, (bw * frac.clamp(0.0, 1.0)).max(3.0), 3.0, 1.5, with_a(WHITE, 0.85 * v)));
                 if input.clicked(r) {
                     if let Some((mx, _)) = input.mouse {
                         shared.media_cmd(MediaCmd::Seek(((mx - bx) / bw).clamp(0.0, 1.0) as f64 * media.duration));
                     }
                 }
-                f.scene.text(Text::new(fmt_time(media.pos_now()), bx - 12.0, by - 7.0, 12.0, with_a(WHITE, 0.6 * v)).right());
-                f.scene.text(Text::new(fmt_time(media.duration), bx + bw + 12.0, by - 7.0, 12.0, with_a(WHITE, 0.6 * v)));
-                // controls
-                let cy = by - 34.0;
+                f.scene.text(Text::new(fmt_time(media.pos_now()), bx - 12.0, by - 7.0, 11.5, with_a(WHITE, 0.5 * v)).right());
+                f.scene.text(Text::new(fmt_time(media.duration), bx + bw + 12.0, by - 7.0, 11.5, with_a(WHITE, 0.5 * v)));
+                let cy = by - 32.0;
                 let cx = w / 2.0;
-                if f.icon_button(input, ic::PREV, cx - 54.0, cy, 18.0, with_a(WHITE, v)) {
+                if f.icon_button(input, ic::PREV, cx - 50.0, cy, 16.0, with_a(WHITE, 0.85 * v)) {
                     shared.media_cmd(MediaCmd::Prev);
                 }
                 let pp = if media.playing { ic::PAUSE } else { ic::PLAY };
-                if f.icon_button(input, pp, cx, cy, 24.0, with_a(WHITE, v)) {
+                if f.icon_button(input, pp, cx, cy, 21.0, with_a(WHITE, v)) {
                     shared.media_cmd(MediaCmd::PlayPause);
                 }
-                if f.icon_button(input, ic::NEXT, cx + 54.0, cy, 18.0, with_a(WHITE, v)) {
+                if f.icon_button(input, ic::NEXT, cx + 50.0, cy, 16.0, with_a(WHITE, 0.85 * v)) {
                     shared.media_cmd(MediaCmd::Next);
                 }
             }
-            // style switcher top-centre
+            // style: name + a row of dots (click a dot to jump), top centre
             let names = LyricStyle::ALL;
-            let ph = 34.0;
-            let mut widths = vec![];
-            for s in names {
-                let t = Text::new(s.name(), 0.0, 0.0, ph * 0.42, WHITE).weight(600);
-                widths.push(f.measure(&t).0 + ph * 0.9);
-            }
-            let total: f32 = widths.iter().sum::<f32>() + 8.0 * (names.len() - 1) as f32 + 12.0;
-            let mut x = (w - total) / 2.0;
-            let y = 28.0;
-            f.scene.shape(Shape::rect(x - 6.0, y - 6.0, total, ph + 12.0, (ph + 12.0) / 2.0, [0.0, 0.0, 0.0, 0.35 * v]));
+            f.scene.text(Text::new(self.view.style.name(), w / 2.0, 26.0, 13.0, with_a(WHITE, 0.7 * v)).weight(600).center());
+            let gap = 14.0;
+            let x0 = w / 2.0 - gap * (names.len() - 1) as f32 / 2.0;
             for (i, s) in names.iter().enumerate() {
-                let (c, bw) = f.pill(input, s.name(), x, y, ph, *s == self.view.style, with_a(WHITE, v));
-                if c {
-                    self.view.style = *s;
-                    action = FsAction::StyleChanged(*s);
+                let dx = x0 + gap * i as f32;
+                let on = *s == self.view.style;
+                let r = if on { 3.4 } else { 2.4 };
+                f.scene.shape(Shape::rect(dx - r, 54.0 - r, r * 2.0, r * 2.0, r, with_a(WHITE, if on { 0.9 } else { 0.3 } * v)));
+                if input.clicked([dx - 7.0, 46.0, 14.0, 16.0]) && !on {
+                    action = self.set_style(*s, f.t);
                 }
-                x += bw + 8.0;
-                let _ = i;
             }
-            // close + offset
-            if f.icon_button(input, ic::CLOSE, w - 44.0, 45.0, 16.0, with_a(WHITE, v)) {
+            if f.icon_button(input, ic::CLOSE, w - 40.0, 40.0, 14.0, with_a(WHITE, 0.75 * v)) {
                 action = FsAction::Close;
             }
-            let off = *shared.lyrics_offset.read();
-            let oy = h - 62.0;
-            let ox = w - 160.0;
-            if f.icon_button(input, ic::MINUS, ox, oy, 12.0, with_a(WHITE, 0.8 * v)) {
-                action = FsAction::Offset(-0.25);
-            }
-            f.scene.text(Text::new(format!("sync {:+.2}s", off), ox + 50.0, oy - 8.0, 12.0, with_a(WHITE, 0.7 * v)).center());
-            if f.icon_button(input, ic::ADD, ox + 100.0, oy, 12.0, with_a(WHITE, 0.8 * v)) {
-                action = FsAction::Offset(0.25);
-            }
             f.scene.text(
-                Text::new("Esc close · ←/→ style · Space play · [ ] sync", w - 44.0, h - 30.0, 11.0, with_a(WHITE, 0.4 * v))
-                    .right(),
+                Text::new("Scroll to change style  ·  Esc to close", w - 40.0, h - 30.0, 11.0, with_a(WHITE, 0.32 * v)).right(),
             );
         }
         if let Some((msg, t0)) = &self.toast {
             let age = f.t - t0;
-            if age > 1.6 {
+            if age > 1.4 {
                 self.toast = None;
             } else {
-                let a = smooth(0.0, 0.15, age) * (1.0 - smooth(1.2, 1.6, age));
-                let t = Text::new(msg.clone(), w / 2.0, h * 0.84, 15.0, with_a(WHITE, a)).weight(600).center();
+                let a = smooth(0.0, 0.12, age) * (1.0 - smooth(1.0, 1.4, age));
+                let t = Text::new(msg.clone(), w / 2.0, h * 0.86, 14.0, with_a(WHITE, a)).weight(600).center();
                 let (tw, _) = f.measure(&t);
-                f.scene.shape(Shape::rect(w / 2.0 - tw / 2.0 - 16.0, h * 0.84 - 8.0, tw + 32.0, 34.0, 17.0, [0.0, 0.0, 0.0, 0.45 * a]));
+                f.scene.shape(Shape::rect(w / 2.0 - tw / 2.0 - 14.0, h * 0.86 - 7.0, tw + 28.0, 32.0, 16.0, [0.0, 0.0, 0.0, 0.35 * a]));
                 f.scene.text(t);
             }
         }
@@ -177,66 +203,22 @@ impl Fullscreen {
     }
 }
 
-/// Top-left corner for the Constellation view: a thin glowing clock tinted with the album's
-/// colours, a tiny twinkling constellation underneath, the date, and where the music is
-/// playing from (with a dot that pulses on the beat).
-fn star_clock(f: &mut Frame, media: &MediaState, pal: &Palette, audio: &AudioState) {
+/// Constellation view: a thin clock and the date in the top-left corner, nothing more.
+fn corner_clock(f: &mut Frame, pal: &Palette) {
     let lt = crate::platform::local_time();
-    let pulse = audio.pulse();
-    let (x, y) = (48.0, 34.0);
-    let tint = mix(pal.light, WHITE, 0.35);
-
-    let time = Text::new(format!("{:02}:{:02}", lt.hour, lt.minute), x, y, 66.0, with_a(tint, 0.95))
+    let (x, y) = (46.0, 32.0);
+    let tint = mix(pal.light, WHITE, 0.5);
+    let time = Text::new(format!("{:02}:{:02}", lt.hour, lt.minute), x, y, 52.0, with_a(tint, 0.9))
         .family(Family::Display)
         .weight(250)
-        .lh(1.1);
-    let (tw, _) = f.measure(&time);
-    f.scene.halo_text(Text { color: with_a(pal.primary, 0.45 + 0.25 * pulse), ..time.clone() });
+        .lh(1.1)
+        .shadow_a(0.3);
     f.scene.text(time);
-
-    // a little constellation tracing under the clock
-    let sy = y + 82.0;
-    let n = 5;
-    let pts: Vec<(f32, f32)> = (0..n)
-        .map(|k| {
-            let fx = x + 4.0 + (tw - 8.0) * k as f32 / (n - 1) as f32;
-            let fy = sy + if k % 2 == 0 { 0.0 } else { -7.0 } + (k as f32 * 1.7).sin() * 3.0;
-            (fx, fy)
-        })
-        .collect();
-    for k in 1..n {
-        let (a, b) = (pts[k - 1], pts[k]);
-        let mut l = Shape::line(a.0, a.1, b.0, b.1, 1.0, with_a(pal.primary, 0.55));
-        l.c1 = with_a(pal.secondary, 0.55);
-        f.scene.glow_shape(l);
-    }
-    for (k, p) in pts.iter().enumerate() {
-        let tw_ = 0.6 + 0.4 * (f.t * 1.7 + k as f32 * 1.3).sin();
-        let r = 2.2 + if k == n / 2 { 1.2 * pulse } else { 0.0 };
-        f.scene.glow_shape(Shape::glow(p.0, p.1, r * 2.0, with_a(mix(tint, WHITE, 0.5), 0.9 * tw_), 0.8));
-    }
-
-    // date
     let date = format!(
         "{} \u{B7} {} {}",
         crate::platform::WEEKDAYS[lt.weekday as usize % 7],
         lt.day,
         crate::platform::MONTHS[(lt.month as usize + 11) % 12]
     );
-    f.scene.text(Text::new(date, x + 2.0, sy + 16.0, 15.0, with_a(tint, 0.62)).weight(500).shadow_a(0.4));
-
-    // playing from …
-    if media.active {
-        let src = crate::ui::source_name(&media.app);
-        let py = sy + 46.0;
-        let dot = with_a(pal.primary, 0.9);
-        let r = 4.0 + 1.6 * pulse;
-        f.scene.halo_shape(Shape::glow(x + 7.0, py + 9.0, 12.0, with_a(pal.primary, 0.5 + 0.4 * pulse), 1.2));
-        f.scene.shape(Shape::rect(x + 7.0 - r, py + 9.0 - r, r * 2.0, r * 2.0, r, dot));
-        let label = if media.playing { "Playing from" } else { "Paused on" };
-        let t1 = Text::new(label, x + 22.0, py, 13.5, with_a(tint, 0.55)).shadow_a(0.4);
-        let (lw, _) = f.measure(&t1);
-        f.scene.text(t1);
-        f.scene.text(Text::new(src, x + 22.0 + lw + 6.0, py, 13.5, with_a(tint, 0.95)).weight(650).shadow_a(0.4));
-    }
+    f.scene.text(Text::new(date, x + 2.0, y + 64.0, 13.5, with_a(tint, 0.55)).weight(500).shadow_a(0.3));
 }

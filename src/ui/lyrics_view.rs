@@ -1,9 +1,9 @@
 //! Lyric renderers shared by the floating widget and the fullscreen view.
 //!
 //! * Karaoke  – Apple-Music-style spring-scrolling list, words fill + glow as sung.
-//! * Constellation – each word is a star; sung words ignite and get linked into a
-//!   constellation that ascends into the starfield when the line ends.
-//! * Drift – lines float in 3D depth and fly past the camera, warp-speed particles.
+//! * Constellation – each word is a star; the shape shows faintly ahead, and each word
+//!   pops in at its star as it's sung while the links draw between them.
+//! * Drift – lines float in 3D depth and fly past the camera.
 
 use std::collections::HashMap;
 
@@ -33,21 +33,6 @@ struct ConstLayout {
     widths: Vec<f32>,
 }
 
-struct Remnant {
-    x: f32,
-    y: f32,
-    born: f32,
-    seed: f32,
-    color: Rgba,
-}
-
-struct Warp {
-    ang: f32,
-    rad: f32,
-    z: f32,
-    hue: f32,
-}
-
 pub struct LyricView {
     pub style: LyricStyle,
     track: u64,
@@ -57,11 +42,6 @@ pub struct LyricView {
     consts: HashMap<usize, ConstLayout>,
     scroll: Spring,
     last_line: Option<usize>,
-    remnants: Vec<Remnant>,
-    exited: std::collections::HashSet<usize>,
-    shooting: Option<(f32, f32, f32, f32, f32)>,
-    next_shoot: f32,
-    warp: Vec<Warp>,
     font_size: f32,
     /// Lyrics-only mode: hide song title/artist from status messages.
     pub minimal: bool,
@@ -80,11 +60,6 @@ impl LyricView {
             consts: HashMap::new(),
             scroll: Spring::with(0.0, 90.0, 17.0),
             last_line: None,
-            remnants: vec![],
-            exited: Default::default(),
-            shooting: None,
-            next_shoot: 4.0,
-            warp: vec![],
             font_size: 0.0,
             minimal: false,
         }
@@ -95,7 +70,6 @@ impl LyricView {
         self.consts.clear();
         self.cum.clear();
         self.last_line = None;
-        self.exited.clear();
     }
 
     fn base_size(&self, rect: [f32; 4], big: bool) -> f32 {
@@ -156,9 +130,6 @@ impl LyricView {
     fn ensure_layouts(&mut self, f: &mut Frame, ly: &LyricsState, size: f32, max_w: f32) {
         let key = (size * 10.0) as u32 ^ ((max_w as u32) << 12) ^ (self.style as u32) << 28;
         if ly.track_id != self.track || key != self.size_key || self.layouts.len() != ly.lines.len() {
-            if ly.track_id != self.track {
-                self.remnants.clear();
-            }
             self.track = ly.track_id;
             self.size_key = key;
             self.reset();
@@ -203,10 +174,6 @@ impl LyricView {
         self.font_size = size;
         if big {
             self.background(f, rect, pal, audio, media);
-        } else if self.style == LyricStyle::Constellation {
-            self.starfield(f, rect, pal, audio, 40, 0.5);
-        } else if self.style == LyricStyle::Drift {
-            self.warp_field(f, rect, pal, audio, 50);
         }
 
         // In minimal (lyrics-only) mode, status messages never show the song name.
@@ -286,154 +253,40 @@ impl LyricView {
 
     // ------------------------------------------------------------ backgrounds
 
+    /// Fullscreen backdrop made from the song's own cover art: the blurred artwork fills
+    /// the screen and drifts slowly, washed in the album colours, darkened at the edges so
+    /// the lyrics stay readable. Without artwork, a soft gradient in the album colours.
     fn background(&mut self, f: &mut Frame, rect: [f32; 4], pal: &Palette, audio: &AudioState, media: &MediaState) {
         let [x, y, w, h] = rect;
         let dark = pal.dark;
-        f.scene.shape(Shape::rect(x, y, w, h, 0.0, [dark[0] * 0.6, dark[1] * 0.6, dark[2] * 0.6, 1.0]).grad(
-            [dark[0] * 1.4, dark[1] * 1.4, dark[2] * 1.6, 1.0],
+        f.scene.shape(Shape::rect(x, y, w, h, 0.0, [dark[0] * 0.5, dark[1] * 0.5, dark[2] * 0.5, 1.0]).grad(
+            [dark[0] * 1.2, dark[1] * 1.2, dark[2] * 1.3, 1.0],
             std::f32::consts::FRAC_PI_2,
         ));
         if let Some(art) = &media.art {
             let (_, kb) = f.ensure_art(art);
-            let op = match self.style {
-                LyricStyle::Karaoke => 0.55,
-                LyricStyle::Banner => 0.78,
-                LyricStyle::Pop => 0.5,
-                LyricStyle::Constellation => 0.22,
-                LyricStyle::Drift => 0.3,
-            };
-            // oversize + slow pan so the blur feels alive
-            let s = w.max(h) * 1.25;
-            let px = (f.t * 0.05).sin() * w * 0.04;
-            let py = (f.t * 0.037).cos() * h * 0.04;
+            // oversize + slow pan / breathe so the artwork feels alive, not static
+            let s = w.max(h) * (1.28 + 0.02 * (f.t * 0.11).sin());
+            let px = (f.t * 0.045).sin() * w * 0.035;
+            let py = (f.t * 0.033).cos() * h * 0.035;
             f.scene.image(
                 ImageDraw::new(kb, x + (w - s) / 2.0 + px, y + (h - s) / 2.0 + py, s, s, 0.0)
-                    .opacity(op)
-                    .saturation(1.35),
+                    .opacity(0.78)
+                    .saturation(1.25),
             );
             f.scene.layer();
-            // vignette
-            f.scene.shape(Shape::rect(x, y, w, h, 0.0, [0.0, 0.0, 0.0, 0.0]).radial([0.0, 0.0, 0.0, 0.7]));
         }
+        // album-colour wash, two soft slow blobs
         let pulse = audio.pulse();
-        // drifting colour nebulae
-        let blobs = [(pal.primary, 0.13, 0.0), (pal.secondary, 0.09, 2.1), (pal.primary, 0.07, 4.2)];
-        for (i, (c, sp, ph)) in blobs.iter().enumerate() {
-            let bx = x + w * (0.5 + 0.32 * (f.t * sp + ph).sin());
-            let by = y + h * (0.5 + 0.28 * (f.t * sp * 1.3 + ph * 1.7).cos());
-            let r = w.max(h) * (0.32 + 0.04 * i as f32) * (1.0 + pulse * 0.06);
-            let a = match self.style {
-                LyricStyle::Karaoke | LyricStyle::Banner | LyricStyle::Pop => 0.22,
-                _ => 0.16,
-            };
-            f.scene.shape(Shape::glow(bx, by, r, with_a(*c, a + pulse * 0.05), 1.6).additive());
+        for (i, (c, sp, ph)) in [(pal.primary, 0.07f32, 0.0f32), (pal.secondary, 0.05, 2.4)].iter().enumerate() {
+            let bx = x + w * (0.5 + 0.3 * (f.t * sp + ph).sin());
+            let by = y + h * (0.5 + 0.25 * (f.t * sp * 1.3 + ph * 1.7).cos());
+            let r = w.max(h) * (0.38 + 0.05 * i as f32);
+            f.scene.shape(Shape::glow(bx, by, r, with_a(*c, 0.10 + pulse * 0.03), 1.6).additive());
         }
-        match self.style {
-            LyricStyle::Constellation => self.starfield(f, rect, pal, audio, 260, 1.0),
-            LyricStyle::Drift => self.warp_field(f, rect, pal, audio, 170),
-            LyricStyle::Banner | LyricStyle::Pop => {
-                // the whole room breathes with the beat
-                f.scene.shape(Shape::rect(x, y, w, h, 0.0, with_a(pal.primary, 0.0)).radial(with_a(pal.primary, 0.10 * pulse)).additive());
-            }
-            LyricStyle::Karaoke => {}
-        }
-    }
-
-    fn starfield(&mut self, f: &mut Frame, rect: [f32; 4], pal: &Palette, audio: &AudioState, n: usize, k: f32) {
-        let [x, y, w, h] = rect;
-        let pulse = audio.pulse();
-        for i in 0..n {
-            let s = i as u64 * 7919 + 13;
-            let depth = 0.3 + hash01(s ^ 0xabc) * 0.7;
-            let sx = (hash01(s) * w + f.t * 2.5 * depth) % w;
-            let sy = (hash01(s ^ 0x55) * h + f.t * 0.6 * depth) % h;
-            let tw = 0.55 + 0.45 * (f.t * (0.6 + hash01(s ^ 3) * 2.2) + hash01(s ^ 9) * 6.28).sin();
-            let r = (0.6 + depth * 1.5) * k.max(0.6);
-            let tint = if hash01(s ^ 77) > 0.8 { pal.light } else { WHITE };
-            let a = (0.18 + 0.55 * depth) * tw * (1.0 + pulse * 0.4) * k.min(1.0);
-            f.scene.shape(Shape::glow(x + sx, y + sy, r * 2.2, with_a(tint, a.min(1.0)), 2.2).additive());
-        }
-        // remnants of past constellations
-        let t = f.t;
-        self.remnants.retain(|r| t - r.born < 30.0);
-        for r in &self.remnants {
-            let age = t - r.born;
-            let a = (1.0 - age / 30.0) * 0.55 * (0.6 + 0.4 * (t * 1.3 + r.seed * 6.0).sin());
-            let ry = r.y - age * 3.0;
-            if ry < y || ry > y + h {
-                continue;
-            }
-            f.scene.shape(Shape::glow(r.x, ry, 3.2, with_a(r.color, a), 2.0).additive());
-        }
-        // occasional shooting star
-        if k >= 1.0 {
-            if self.shooting.is_none() && f.t > self.next_shoot {
-                let sx = x + w * (0.2 + hash01(f.t.to_bits() as u64) * 0.6);
-                let sy = y + h * (0.05 + hash01(f.t.to_bits() as u64 ^ 1) * 0.25);
-                let dir = if hash01(f.t.to_bits() as u64 ^ 2) > 0.5 { 1.0 } else { -1.0 };
-                self.shooting = Some((f.t, sx, sy, dir * w * 0.35, h * 0.22));
-                self.next_shoot = f.t + 6.0 + hash01(f.t.to_bits() as u64 ^ 4) * 9.0;
-            }
-            if let Some((t0, sx, sy, dx, dy)) = self.shooting {
-                let p = (f.t - t0) / 0.9;
-                if p >= 1.0 {
-                    self.shooting = None;
-                } else {
-                    let e = ease_out_cubic(p);
-                    let hx = sx + dx * e;
-                    let hy = sy + dy * e;
-                    let tail = 0.22;
-                    let e0 = ease_out_cubic((p - tail).max(0.0));
-                    let tx = sx + dx * e0;
-                    let ty = sy + dy * e0;
-                    let a = (1.0 - p) * 0.9;
-                    let mut sh = Shape::line(tx, ty, hx, hy, 1.6, with_a(pal.light, 0.0));
-                    sh.c1 = with_a(WHITE, a);
-                    f.scene.glow_shape(sh);
-                    f.scene.glow_shape(Shape::glow(hx, hy, 6.0, with_a(WHITE, a), 1.5));
-                }
-            }
-        }
-    }
-
-    fn warp_field(&mut self, f: &mut Frame, rect: [f32; 4], pal: &Palette, audio: &AudioState, n: usize) {
-        if self.warp.len() != n {
-            self.warp = (0..n)
-                .map(|i| Warp {
-                    ang: hash01(i as u64 * 31 + 1) * std::f32::consts::TAU,
-                    rad: 0.15 + hash01(i as u64 * 31 + 2) * 0.85,
-                    z: hash01(i as u64 * 31 + 3) * 4.0,
-                    hue: hash01(i as u64 * 31 + 4),
-                })
-                .collect();
-        }
-        let [x, y, w, h] = rect;
-        let (cx, cy) = (x + w / 2.0, y + h / 2.0);
-        let speed = 0.35 + audio.level * 2.2 + audio.pulse() * 1.2;
-        let dt = f.dt.min(0.05);
-        let scale = w.max(h) * 0.5;
-        for p in self.warp.iter_mut() {
-            let z0 = p.z;
-            p.z -= speed * dt;
-            if p.z < 0.08 {
-                p.z += 4.0;
-                continue;
-            }
-            let proj = |z: f32| (p.ang.cos() * p.rad / z, p.ang.sin() * p.rad / z);
-            let (ax, ay) = proj(z0.max(p.z + 0.02));
-            let (bx, by) = proj(p.z);
-            let (x0, y0) = (cx + ax * scale * 0.35, cy + ay * scale * 0.35);
-            let (x1, y1) = (cx + bx * scale * 0.35, cy + by * scale * 0.35);
-            if x1 < x || x1 > x + w || y1 < y || y1 > y + h {
-                continue;
-            }
-            let a = ((4.0 - p.z) / 4.0).powf(1.6) * 0.8;
-            let c = if p.hue > 0.5 { pal.primary } else { pal.secondary };
-            let c = mix(c, WHITE, 0.35);
-            let mut s = Shape::line(x0, y0, x1, y1, 1.0 + (1.0 / p.z).min(2.5), with_a(c, 0.0));
-            s.c1 = with_a(c, a);
-            f.scene.shape(s.additive());
-        }
+        // darken for readability: overall dim + vignette
+        f.scene.shape(Shape::rect(x, y, w, h, 0.0, [0.0, 0.0, 0.0, 0.38]));
+        f.scene.shape(Shape::rect(x, y, w, h, 0.0, [0.0, 0.0, 0.0, 0.0]).radial([0.0, 0.0, 0.0, 0.55]));
     }
 
     // ---------------------------------------------------------------- karaoke
@@ -513,7 +366,7 @@ impl LyricView {
             } else {
                 (0.34 - 0.07 * d.abs()).max(0.06)
             };
-            let pulse = audio.pulse();
+            let _ = audio;
             for (j, wb) in lay.words.iter().enumerate() {
                 let text = if line.words.is_empty() {
                     line.text.split_whitespace().nth(j).unwrap_or("").to_string()
@@ -521,46 +374,34 @@ impl LyricView {
                     line.words[j].text.clone()
                 };
                 let wx = cx + wb.x * s;
-                let mut wy = y_top + wb.y * s;
-                let mut p = 0.0f32;
+                let wy = y_top + wb.y * s;
+                // edit-style pop: words wait dim, then the word being sung pops up a little
+                // (quick overshoot) and turns white; sung words stay white
+                let (mut a, mut sc, mut lift, mut active) = (base_a, 1.0f32, 0.0f32, false);
                 if is_cur {
                     let w = &line.words[j];
-                    p = ((pos - w.t) / (w.end - w.t).max(0.05)).clamp(0.0, 1.0) as f32;
-                    let bump = if p > 0.0 && p < 1.0 { (p * std::f32::consts::PI).sin() } else { 0.0 };
-                    wy -= bump * size * (0.07 + 0.05 * pulse);
+                    let ts = (pos - w.t) as f32;
+                    if ts >= 0.0 {
+                        let u = (ts / 0.24).clamp(0.0, 1.0);
+                        let amp = (u * std::f32::consts::PI).sin() * (1.0 - u).sqrt();
+                        sc = 1.0 + 0.08 * amp;
+                        lift = size * 0.04 * amp;
+                        active = pos < w.end;
+                        a = if active { 1.0 } else { 0.88 };
+                    }
                 }
-                let base = Text::new(text, wx, wy, size, with_a(WHITE, base_a * fade_edge))
+                let ww = wb.w * s;
+                let t = Text::new(text, wx - ww * (sc - 1.0) / 2.0, wy - size * s * (sc - 1.0) * 0.6 - lift, size, with_a(WHITE, a * fade_edge))
                     .family(Family::Lyric)
                     .weight(650)
                     .lh(1.2)
-                    .scale(s)
+                    .scale(s * sc)
                     .clip(clip);
-                f.scene.text(base.clone());
-                if is_cur && p > 0.0 {
-                    let ww = wb.w * s;
-                    let fill_x = wx + ww * p;
-                    // solid fill up to the sweep, then a soft feathered edge instead of a hard cut
-                    let lit_c = mix(WHITE, pal.light, 0.15);
-                    let lit = Text { color: with_a(lit_c, fade_edge), clip: Some([wx - 2.0, clip[1], fill_x + 1.0, clip[3]]), ..base.clone() };
-                    f.scene.text(lit);
-                    if p < 1.0 {
-                        let feather = (size * 0.55).min(ww * (1.0 - p));
-                        for (k, fa) in [(0, 0.62f32), (1, 0.36), (2, 0.16)] {
-                            let a0 = fill_x + feather * k as f32 / 3.0;
-                            let a1 = fill_x + feather * (k + 1) as f32 / 3.0;
-                            f.scene.text(Text { color: with_a(lit_c, fa * fade_edge), clip: Some([a0, clip[1], a1 + 0.5, clip[3]]), ..base.clone() });
-                        }
-                    }
-                    // glow: strong on the word being sung, softer trail on sung words, breathing with the beat
-                    let glow_c = mix(pal.primary, WHITE, 0.3);
-                    let breathe = 0.85 + 0.15 * (f.t * 2.2).sin();
-                    let ga = if p < 1.0 { 1.0 } else { 0.5 } * breathe * (1.0 + pulse * 0.6);
-                    f.scene.halo_text(Text {
-                        color: with_a(glow_c, (ga * fade_edge).min(1.0)),
-                        clip: Some([wx - size, clip[1], fill_x + size * 0.3, clip[3]]),
-                        ..base
-                    });
+                if active {
+                    // only a hint of glow on the word being sung
+                    f.scene.halo_text(Text { color: with_a(mix(pal.primary, WHITE, 0.55), 0.20 * fade_edge), ..t.clone() });
                 }
+                f.scene.text(t);
             }
         }
     }
@@ -779,9 +620,10 @@ impl LyricView {
                     .center()
                     .scale(((sc * 50.0).round() / 50.0).max(0.1))
                     .clip(clip);
-                let gc = if j % 2 == 0 { pal.primary } else { pal.secondary };
-                let glow = if active { 1.0 } else { 0.4 } * (1.0 + pulse * 0.5);
-                f.scene.halo_text(Text { color: with_a(mix(gc, WHITE, 0.25), (glow * appear * ga).min(1.0)), ..t.clone() });
+                if active {
+                    let gc = if j % 2 == 0 { pal.primary } else { pal.secondary };
+                    f.scene.halo_text(Text { color: with_a(mix(gc, WHITE, 0.5), 0.22 * appear * ga), ..t.clone() });
+                }
                 f.scene.text(t);
             }
         }
@@ -880,7 +722,6 @@ impl LyricView {
         if ly.track_id != self.track {
             self.track = ly.track_id;
             self.reset();
-            self.remnants.clear();
         }
         let size = self.font_size;
         let max_w = rect[2] * if big { 0.74 } else { 0.9 };
@@ -955,84 +796,58 @@ impl LyricView {
             let gx = center.0;
             let tf = |p: (f32, f32)| (gx + p.0 * scale, gy + p.1 * scale);
 
-            // when the exit starts, leave faint stars behind
-            if exit > 0.02 && !self.exited.contains(&i) {
-                self.exited.insert(i);
-                for (k, s) in lay.stars.iter().enumerate() {
-                    let (sx, sy) = tf(*s);
-                    self.remnants.push(Remnant {
-                        x: sx,
-                        y: sy,
-                        born: f.t,
-                        seed: hash01(k as u64 + i as u64 * 31),
-                        color: if k % 2 == 0 { mix(pal.primary, WHITE, 0.5) } else { mix(pal.secondary, WHITE, 0.5) },
-                    });
-                }
-                if self.remnants.len() > 400 {
-                    let n = self.remnants.len() - 400;
-                    self.remnants.drain(..n);
-                }
-            }
-
-            let lit_of = |w: &Word| smooth((w.t - 0.06) as f32, (w.t + 0.2) as f32, pos as f32);
-            // links
+            // links: thin lines drawn star to star as each word arrives
             for j in 1..lay.stars.len() {
                 let w = &line.words[j];
-                let prog = ease_out_cubic(smooth((w.t - 0.12) as f32, (w.t + 0.28) as f32, pos as f32));
+                let prog = ease_out_cubic(smooth((w.t - 0.10) as f32, (w.t + 0.22) as f32, pos as f32));
                 if prog <= 0.0 {
                     continue;
                 }
                 let (ax, ay) = tf(lay.stars[j - 1]);
                 let (bx, by) = tf(lay.stars[j]);
-                let ex = lerp(ax, bx, prog);
-                let ey = lerp(ay, by, prog);
-                let mut l = Shape::line(ax, ay, ex, ey, (size * 0.055).max(1.0), with_a(pal.primary, 0.75 * ga));
-                l.c1 = with_a(pal.secondary, 0.75 * ga);
-                f.scene.glow_shape(l.soft(0.6));
+                let mut l = Shape::line(ax, ay, lerp(ax, bx, prog), lerp(ay, by, prog), (size * 0.03).max(1.0), with_a(mix(pal.primary, WHITE, 0.5), 0.40 * ga));
+                l.c1 = with_a(mix(pal.secondary, WHITE, 0.5), 0.40 * ga);
+                f.scene.shape(l);
             }
-            // closing link back to the first star once the line is complete (a "shape")
-            if lay.stars.len() >= 4 {
-                let lw = line.words.last().unwrap();
-                let prog = ease_out_cubic(smooth(lw.end as f32, lw.end as f32 + 0.6, pos as f32));
-                if prog > 0.0 && hash01(i as u64 ^ self.track) > 0.45 {
-                    let (ax, ay) = tf(*lay.stars.last().unwrap());
-                    let (bx, by) = tf(lay.stars[lay.stars.len() / 2 - 1]);
-                    let mut l = Shape::line(ax, ay, lerp(ax, bx, prog), lerp(ay, by, prog), (size * 0.04).max(0.8), with_a(pal.secondary, 0.35 * ga));
-                    l.c1 = with_a(pal.primary, 0.35 * ga);
-                    f.scene.glow_shape(l);
-                }
-            }
-            // stars + labels
+            // stars: faint points that show the shape ahead; words pop in as they're sung
             for (j, w) in line.words.iter().enumerate() {
                 if j >= lay.stars.len() {
                     break;
                 }
-                let lit = lit_of(w);
+                let ts = (pos - w.t) as f32;
+                let lit = smooth(-0.04, 0.12, ts);
                 let active = pos >= w.t && pos < w.end;
                 let (sx, sy) = tf(lay.stars[j]);
-                let tw = 0.85 + 0.15 * (f.t * 3.0 + j as f32).sin();
-                let r = size * (0.09 + 0.13 * lit) * (1.0 + pulse * 0.25 * lit) * tw;
-                let c = if j % 2 == 0 { pal.primary } else { pal.secondary };
-                f.scene.shape(Shape::glow(sx, sy, r * 5.5, with_a(c, 0.35 * lit * ga), 1.8).additive());
-                f.scene.glow_shape(Shape::glow(sx, sy, r * 1.6, with_a(mix(c, WHITE, 0.7), (0.3 + 0.7 * lit) * ga), 1.2));
-                if active || lit > 0.0 && (pos - w.t) < 0.5 {
-                    let flare = if active { 1.0 } else { 1.0 - ((pos - w.t) as f32 / 0.5) };
-                    f.scene.glow_shape(Shape::star(sx, sy, r * 6.0, with_a(WHITE, 0.9 * flare * ga), 0.9));
+                let c = mix(if j % 2 == 0 { pal.primary } else { pal.secondary }, WHITE, 0.6);
+                let r = size * (0.055 + 0.05 * lit) * (1.0 + 0.15 * pulse * lit);
+                f.scene.shape(Shape::glow(sx, sy, r * 2.6, with_a(c, (0.30 + 0.6 * lit) * ga), 1.4));
+                if active && ts < 0.35 {
+                    // a brief sparkle when the word lands
+                    f.scene.shape(Shape::star(sx, sy, r * 4.5, with_a(WHITE, 0.55 * (1.0 - ts / 0.35) * ga), 0.9));
                 }
-                // label
+                if ts < 0.0 {
+                    continue; // not sung yet: the word hasn't popped
+                }
+                // the word pops in at its star: quick overshoot, small lift
+                let u = (ts / 0.34).clamp(0.0, 1.0);
+                let e = ease_out_back(u);
+                let sc = scale * (0.55 + 0.45 * e);
+                let appear = smooth(0.0, 0.07, ts);
                 let (lx, lyy) = tf(lay.labels[j]);
-                let la = (0.22 + 0.78 * lit) * ga;
-                let txt = Text::new(w.text.clone(), lx, lyy, size, with_a(WHITE, la))
+                let lift = (1.0 - u) * size * 0.25;
+                let ty = lyy + size * 0.6 * (scale - sc) + lift;
+                let col = if active { WHITE } else { with_a(WHITE, 0.82) };
+                let txt = Text::new(w.text.clone(), lx, ty, size, with_a(col, col[3] * appear * ga))
                     .family(Family::Lyric)
-                    .weight(600)
+                    .weight(650)
                     .lh(1.2)
                     .center()
-                    .scale(scale)
+                    .scale(((sc * 50.0).round() / 50.0).max(0.1))
                     .clip(clip);
-                if lit > 0.0 {
-                    f.scene.halo_text(Text { color: with_a(mix(c, WHITE, 0.2), 0.7 * lit * ga), ..txt.clone() });
+                if active {
+                    f.scene.halo_text(Text { color: with_a(c, 0.18 * appear * ga), ..txt.clone() });
                 }
-                f.scene.text(txt);
+                f.scene.text(txt.shadow_a(0.35));
             }
         }
         if !any_visible {
