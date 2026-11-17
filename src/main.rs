@@ -36,9 +36,12 @@ fn main() {
         // never leave the user without a taskbar
         desktop::set_windows_taskbar_visible(true);
     }));
+    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
     if !single_instance() {
+        gfx::log(&format!("start skipped: Aurolo is already running ({exe})"));
         return;
     }
+    gfx::log(&format!("start: Aurolo {} ({exe})", env!("CARGO_PKG_VERSION")));
     let demo = demo::init();
     let mut cfg = config::Config::load();
     if demo {
@@ -64,4 +67,7 @@ fn main() {
     if let Err(e) = el.run_app(&mut app) {
         gfx::log(&format!("event loop error: {e}"));
     }
+    // never leave the user without a taskbar
+    desktop::set_windows_taskbar_visible(true);
+    gfx::log("exit");
 }

@@ -127,6 +127,12 @@ pub struct App {
     dock_rc: Option<windows::Win32::Foundation::RECT>,
     /// We hid the Windows taskbar (so we know to bring it back).
     taskbar_hidden: bool,
+    /// Dock shown over a full-screen app because the mouse went to the bottom edge.
+    dock_peek: bool,
+    gpu_tries: u32,
+    gpu_retry_at: Option<Instant>,
+    /// Hotkey "already in use" warnings logged (lyrics, island).
+    hk_warned: (bool, bool),
     last_taskbar_sync: Instant,
     backdrop: Option<Win>,
     tray: Option<TrayIcon>,
@@ -175,6 +181,10 @@ impl App {
             dock: None,
             dock_rc: None,
             taskbar_hidden: false,
+            dock_peek: false,
+            gpu_tries: 0,
+            gpu_retry_at: None,
+            hk_warned: (false, false),
             last_taskbar_sync: Instant::now(),
             backdrop: None,
             tray: None,
@@ -618,7 +628,12 @@ impl App {
             if let Some(hk) = parse_hotkey(&self.cfg.hotkey_lyrics) {
                 match mgr.register(hk) {
                     Ok(_) => self.hk_lyrics = hk.id(),
-                    Err(e) => crate::gfx::log(&format!("hotkey {} busy: {e}", self.cfg.hotkey_lyrics)),
+                    Err(e) => {
+                        if !self.hk_warned.0 {
+                            self.hk_warned.0 = true;
+                            crate::gfx::log(&format!("hotkey {} is used by another app: {e}", self.cfg.hotkey_lyrics));
+                        }
+                    }
                 }
             }
         }
@@ -626,7 +641,12 @@ impl App {
             if let Some(hk) = parse_hotkey(&self.cfg.hotkey_island) {
                 match mgr.register(hk) {
                     Ok(_) => self.hk_island = hk.id(),
-                    Err(e) => crate::gfx::log(&format!("hotkey {} busy: {e}", self.cfg.hotkey_island)),
+                    Err(e) => {
+                        if !self.hk_warned.1 {
+                            self.hk_warned.1 = true;
+                            crate::gfx::log(&format!("hotkey {} is used by another app: {e}", self.cfg.hotkey_island));
+                        }
+                    }
                 }
             }
         }
@@ -974,10 +994,24 @@ impl ApplicationHandler for App {
             return;
         }
         match Gpu::new(&self.cfg.lyrics_font) {
-            Ok(g) => self.gpu = Some(g),
+            Ok(g) => {
+                if self.gpu_tries > 0 {
+                    crate::gfx::log(&format!("GPU ready after {} retries", self.gpu_tries));
+                }
+                self.gpu = Some(g);
+            }
             Err(e) => {
-                crate::gfx::log(&format!("GPU init failed: {e}"));
-                el.exit();
+                // right after sign-in the graphics driver may not be ready yet: retry for
+                // up to two minutes before giving up
+                self.gpu_tries += 1;
+                crate::gfx::log(&format!("GPU init failed (try {}): {e}", self.gpu_tries));
+                if self.gpu_tries >= 40 {
+                    el.exit();
+                } else {
+                    let at = Instant::now() + Duration::from_secs(3);
+                    self.gpu_retry_at = Some(at);
+                    el.set_control_flow(ControlFlow::WaitUntil(at));
+                }
                 return;
             }
         }
@@ -1105,6 +1139,14 @@ impl ApplicationHandler for App {
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         if self.gpu.is_none() {
+            if let Some(at) = self.gpu_retry_at {
+                if Instant::now() >= at {
+                    self.gpu_retry_at = None;
+                    self.resumed(el);
+                } else {
+                    el.set_control_flow(ControlFlow::WaitUntil(at));
+                }
+            }
             return;
         }
         self.handle_events(el);
@@ -1149,8 +1191,28 @@ impl ApplicationHandler for App {
         if let Some((w, _)) = &mut self.widget {
             w.set_visible(!hide_for_fs);
         }
-        if let Some((w, _)) = &mut self.dock {
-            w.set_visible(!hide_for_fs);
+        let (mp, ms, msc) = self.mon_rect();
+        if let Some((w, dk)) = &mut self.dock {
+            let mut show = !hide_for_fs;
+            if hide_for_fs {
+                // full-screen video / game: the dock stays out of the way, but slides up
+                // when the mouse touches the bottom edge (and stays while it's used)
+                let (cx, cy) = platform::cursor_pos();
+                let on_mon = cx >= mp.x && cx < mp.x + ms.width as i32;
+                let bottom = mp.y + ms.height as i32;
+                let at_edge = on_mon && cy >= bottom - 2;
+                let bar_top = bottom - (crate::ui::dock::DOCK_H as f64 * msc) as i32;
+                let over_bar = on_mon && cy >= bar_top - 4;
+                let was = self.dock_peek;
+                self.dock_peek = at_edge || (was && (over_bar || dk.popup_open()));
+                if self.dock_peek && !was {
+                    platform::keep_topmost(w.hwnd);
+                }
+                show = self.dock_peek;
+            } else {
+                self.dock_peek = false;
+            }
+            w.set_visible(show);
         }
         if let Some((w, _)) = &mut self.edge {
             let want = !hide_for_fs && self.fs.is_none() && (playing || !self.cfg.edge_only_when_playing);
@@ -1164,7 +1226,9 @@ impl ApplicationHandler for App {
         }
 
         let fast = Duration::from_micros(16_667);
-        let mut next_wake = now + Duration::from_millis(250);
+        // during full-screen apps, check the bottom edge often so the dock can peek up
+        let idle_wake = if self.fullscreen_app && self.dock.is_some() { 60 } else { 250 };
+        let mut next_wake = now + Duration::from_millis(idle_wake);
         let island_idle = self
             .island
             .as_ref()

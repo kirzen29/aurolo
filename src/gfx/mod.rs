@@ -872,8 +872,17 @@ fn att(v: &wgpu::TextureView) -> Option<wgpu::RenderPassColorAttachment<'_>> {
 pub fn log(s: &str) {
     use std::io::Write;
     let path = crate::config::data_dir().join("aurolo.log");
+    // keep the log small: start over once it passes 256 KB
+    if std::fs::metadata(&path).map(|m| m.len() > 256 * 1024).unwrap_or(false) {
+        let _ = std::fs::remove_file(&path);
+    }
+    let t = crate::platform::local_time();
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(f, "{s}");
+        let _ = writeln!(
+            f,
+            "[{:04}-{:02}-{:02} {:02}:{:02}:{:02}] {s}",
+            t.year, t.month, t.day, t.hour, t.minute, t.second
+        );
     }
     eprintln!("{s}");
 }
