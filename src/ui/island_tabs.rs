@@ -50,11 +50,13 @@ struct Planner {
     countdowns: Vec<Countdown>,
     classes: Vec<Class>,
     quiet_gaming: bool,
+    /// Focus lock end (unix seconds), 0 = off. Saved so a restart doesn't end it.
+    focus_until: i64,
 }
 
 impl Default for Planner {
     fn default() -> Self {
-        Planner { notes: String::new(), todos: vec![], countdowns: vec![], classes: vec![], quiet_gaming: true }
+        Planner { notes: String::new(), todos: vec![], countdowns: vec![], classes: vec![], quiet_gaming: true, focus_until: 0 }
     }
 }
 
@@ -81,6 +83,7 @@ fn demo_planner() -> Planner {
             Class { weekday: weekday_of(today), start: 15 * 60, end: 16 * 60, title: "Gym".into() },
         ],
         quiet_gaming: true,
+        focus_until: 0,
     }
 }
 
@@ -464,6 +467,18 @@ pub struct Extras {
     icons: HashMap<String, Option<u64>>,
     sched_day: Option<u8>,
     notes_scroll: f32,
+    lock: crate::focuslock::FocusLock,
+    lock_choice: i64,
+    hold_since: Option<f32>,
+    blocked_count: u32,
+}
+
+fn fmt_mins(m: i64) -> String {
+    match m {
+        m if m >= 60 && m % 60 == 0 => format!("{} h", m / 60),
+        m if m >= 60 => format!("{} h {} min", m / 60, m % 60),
+        m => format!("{m} min"),
+    }
 }
 
 fn key_of(s: &str) -> u64 {
@@ -477,7 +492,14 @@ impl Extras {
         } else {
             std::fs::read_to_string(planner_path()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
         };
+        let demo_lock = crate::demo::is_demo() && std::env::var("AUROLO_DEMO_LOCK").is_ok();
+        let until = if demo_lock { platform::unix_now() + 42 * 60 } else if crate::demo::is_demo() { 0 } else { planner.focus_until };
+        let lock = crate::focuslock::spawn(until);
         Extras {
+            lock,
+            lock_choice: 50,
+            hold_since: None,
+            blocked_count: 0,
             planner,
             edit: None,
             input: String::new(),
@@ -513,8 +535,37 @@ impl Extras {
         self.planner.quiet_gaming
     }
 
+    /// Seconds left on the focus lock, if one is running.
+    pub fn lock_left(&self) -> Option<i64> {
+        let left = self.lock.until.load(Ordering::Relaxed) - platform::unix_now();
+        if left > 0 { Some(left) } else { None }
+    }
+
+    fn set_lock(&mut self, until: i64) {
+        self.lock.until.store(until, Ordering::Relaxed);
+        self.planner.focus_until = until;
+        self.save();
+    }
+
+    /// Every frame: report what the lock blocked, and note when it runs out.
+    pub fn tick(&mut self, shared: &Shared) {
+        while let Ok(name) = self.lock.blocked.try_recv() {
+            self.blocked_count += 1;
+            shared.hud(Hud::Message("Blocked · focus lock".into(), name));
+        }
+        if self.planner.focus_until != 0 && self.lock_left().is_none() {
+            self.planner.focus_until = 0;
+            self.save();
+            shared.hud(Hud::Message("Focus lock".into(), "Done, games are unlocked".into()));
+        }
+    }
+
     /// Next class today or nearest countdown, for the compact island.
     pub fn next_up(&self) -> Option<String> {
+        if let Some(left) = self.lock_left() {
+            let m = (left + 59) / 60;
+            return Some(if m >= 60 { format!("Focus lock · {}h {:02}m", m / 60, m % 60) } else { format!("Focus lock · {m} min left") });
+        }
         let t = platform::local_time();
         let now_m = t.hour as u32 * 60 + t.minute as u32;
         let wd = t.weekday as u8;
@@ -1139,7 +1190,13 @@ impl Extras {
                     if hov {
                         f.scene.shape(Shape::stroke(tx, ty, tile_w, tile_h, 14.0, 1.2, with_a(pal.primary, 0.8 * a)));
                     }
-                    if hov && input.clicked(r) {
+                    if self.lock_left().is_some() {
+                        f.scene.shape(Shape::rect(tx, ty, tile_w, tile_h, 14.0, [0.0, 0.0, 0.0, 0.45 * a]));
+                        f.icon('\u{E72E}', tx + tile_w / 2.0, ty + (tile_h - 26.0) / 2.0 + 6.0, 16.0, with_a(WHITE, 0.85 * a));
+                    }
+                    if hov && input.clicked(r) && self.lock_left().is_some() {
+                        shared.hud(Hud::Message("Focus lock".into(), "Games are locked right now".into()));
+                    } else if hov && input.clicked(r) {
                         if g.args.is_empty() {
                             platform::open(&g.launch);
                         } else {
@@ -1187,32 +1244,73 @@ impl Extras {
             }
         }
 
-        // ---- performance + quiet switch
-        let py0 = y + ph + gap;
-        let pr2 = [rx, py0, rw, h - ph - gap];
-        Self::card(f, pr2, "Performance", ic::CHIP, a);
-        let sys = shared.sys.read().clone();
-        let ram = if sys.ram_total > 0.0 { (sys.ram_used / sys.ram_total) as f32 } else { 0.0 };
-        let mut bars: Vec<(String, f32, String)> = vec![(
-            "CPU".into(),
-            sys.cpu / 100.0,
-            format!("{:.0}%{}", sys.cpu, sys.cpu_temp.map(|t| format!(" · {t:.0}°")).unwrap_or_default()),
-        )];
-        if let Some(g) = sys.gpu {
-            bars.push(("GPU".into(), g / 100.0, format!("{g:.0}%{}", sys.gpu_temp.map(|t| format!(" · {t:.0}°")).unwrap_or_default())));
-        }
-        bars.push(("RAM".into(), ram, format!("{:.1}/{:.0} GB", sys.ram_used, sys.ram_total)));
-        for (k, (name, v, label)) in bars.iter().enumerate() {
-            let by = py0 + 40.0 + k as f32 * 26.0;
-            f.scene.text(Text::new(name.clone(), rx + 16.0, by, 11.0, with_a(WHITE, 0.6 * a)).weight(600));
-            let bx = rx + 54.0;
-            let bw = rw - 54.0 - 104.0;
-            let c = if *v > 0.85 { rgba(255, 110, 110, 1.0) } else { pal.primary };
-            f.bar(bx, by + 6.0, bw, 5.0, *v, with_a(c, a), with_a(mix(c, pal.secondary, 0.5), a));
-            f.scene.text(Text::new(label.clone(), rx + rw - 16.0, by, 11.0, with_a(WHITE, 0.8 * a)).right());
+        // ---- focus lock + quiet switch
+        let fy0 = y + ph + gap;
+        let fh = h - ph - gap;
+        let fr = [rx, fy0, rw, fh];
+        Self::card(f, fr, "Focus lock", '\u{E72E}', a);
+        let lock_c = rgba(120, 170, 255, 1.0);
+        match self.lock_left() {
+            Some(left) => {
+                f.scene.shape(Shape::rect(fr[0], fr[1], fr[2], fr[3], 20.0, with_a(lock_c, 0.08 * a)));
+                let mins = (left + 59) / 60;
+                let big = if mins >= 60 { format!("{}h {:02}m", mins / 60, mins % 60) } else { format!("{mins} min") };
+                f.scene.text(Text::new(big, rx + 18.0, fy0 + 40.0, 26.0, with_a(WHITE, a)).weight(700).family(Family::Display));
+                f.scene.text(Text::new("left · games and launchers are blocked", rx + 18.0, fy0 + 76.0, 11.0, with_a(WHITE, 0.6 * a)));
+                if self.blocked_count > 0 {
+                    let n = self.blocked_count;
+                    f.scene.text(Text::new(format!("Stopped {n} launch{}", if n == 1 { "" } else { "es" }), rx + rw - 16.0, fy0 + 14.0, 10.5, with_a(lock_c, 0.9 * a)).right());
+                }
+                // hold to end early: a little friction on purpose
+                let br = [rx + 14.0, fy0 + fh - 82.0, rw - 28.0, 32.0];
+                let holding = input.down && input.over(br);
+                if holding {
+                    self.hold_since.get_or_insert(f.t);
+                } else {
+                    self.hold_since = None;
+                }
+                let p = self.hold_since.map(|t0| ((f.t - t0) / 3.0).clamp(0.0, 1.0)).unwrap_or(0.0);
+                f.scene.shape(Shape::rect(br[0], br[1], br[2], br[3], 16.0, [1.0, 1.0, 1.0, if input.over(br) { 0.1 } else { 0.06 } * a]));
+                if p > 0.0 {
+                    f.scene.shape(Shape::rect(br[0], br[1], (br[2] * p).max(br[3]), br[3], 16.0, with_a(rgba(255, 120, 110, 1.0), 0.45 * a)));
+                }
+                let label = if p > 0.0 { "Keep holding…" } else { "Hold 3 s to end early" };
+                f.scene.text(Text::new(label, br[0] + br[2] / 2.0, br[1] + 8.0, 12.0, with_a(WHITE, 0.85 * a)).center().weight(600));
+                if p >= 1.0 {
+                    self.set_lock(0);
+                    self.hold_since = None;
+                    shared.hud(Hud::Message("Focus lock".into(), "Ended early".into()));
+                }
+            }
+            None => {
+                f.scene.text(Text::new("Block games and game launchers for a while", rx + 18.0, fy0 + 40.0, 11.0, with_a(WHITE, 0.6 * a)));
+                let opts: [(&str, i64); 4] = [("25m", 25), ("50m", 50), ("1½h", 90), ("2h", 120)];
+                let cw = (rw - 28.0 - 3.0 * 6.0) / 4.0;
+                for (k, (lab, mins)) in opts.iter().enumerate() {
+                    let cx = rx + 14.0 + k as f32 * (cw + 6.0);
+                    let r = [cx, fy0 + 62.0, cw, 28.0];
+                    let on = self.lock_choice == *mins;
+                    let hov = input.over(r);
+                    f.scene.shape(Shape::rect(r[0], r[1], r[2], r[3], 14.0, if on { with_a(lock_c, 0.9 * a) } else { [1.0, 1.0, 1.0, if hov { 0.12 } else { 0.06 } * a] }));
+                    f.scene.text(Text::new(*lab, cx + cw / 2.0, fy0 + 68.0, 12.0, with_a(if on { BLACK } else { WHITE }, if on { 0.9 } else { 0.8 } * a)).center().weight(650));
+                    if input.clicked(r) {
+                        self.lock_choice = *mins;
+                    }
+                }
+                let sr = [rx + 14.0, fy0 + fh - 82.0, rw - 28.0, 32.0];
+                let hov = input.over(sr);
+                f.scene.shape(Shape::rect(sr[0], sr[1], sr[2], sr[3], 16.0, with_a(lock_c, if hov { 1.0 } else { 0.85 } * a)));
+                f.scene.text(Text::new(format!("Start focus lock · {}", fmt_mins(self.lock_choice)), sr[0] + sr[2] / 2.0, sr[1] + 8.0, 12.0, with_a(BLACK, 0.9 * a)).center().weight(700));
+                if input.clicked(sr) {
+                    let until = platform::unix_now() + self.lock_choice * 60;
+                    self.set_lock(until);
+                    self.blocked_count = 0;
+                    shared.hud(Hud::Message("Focus lock on".into(), format!("Games blocked for {}", fmt_mins(self.lock_choice))));
+                }
+            }
         }
         // quiet while gaming
-        let qy = py0 + (h - ph - gap) - 42.0;
+        let qy = fy0 + fh - 42.0;
         let qr = [rx + 10.0, qy, rw - 20.0, 32.0];
         let on = self.planner.quiet_gaming;
         f.scene.text(Text::new("Quiet while gaming", rx + 18.0, qy + 8.0, 12.0, with_a(WHITE, 0.85 * a)).weight(600));

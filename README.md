@@ -28,7 +28,8 @@ A pill at the top-centre of the screen. Hover for a quick peek, click to open th
 - **Tools:** timer, Pomodoro, stopwatch, focus mode, clipboard history, a file shelf (drag files onto the island) and today's weather and calendar.
 - **Daily:** reminders in plain English ("stretch in 30m", "call mom at 6pm"), screen time per app, keep awake, and lock/sleep/restart/shut down (restart and shut down ask for a second click).
 - **Social:** quick links to your Discord, Instagram and WhatsApp messages, with unread counts from Windows notifications.
-- **Game:** your installed Riot, Epic and Steam games in one place (click to launch), live ping to the Mumbai and Singapore game servers and to the internet, CPU/GPU/RAM load, and **Quiet while gaming**, which drops island pop-ups while a full-screen game is running.
+- **Game:** your installed Riot, Epic and Steam games in one place (click to launch), live ping to the Mumbai and Singapore game servers and to the internet, and **Quiet while gaming**, which drops island pop-ups while a full-screen game is running.
+- **Focus lock** (in the Game tab): pick 25 min to 2 h and games and game launchers (Steam, Epic, Riot/VALORANT, Roblox, Battle.net and anything in your game folders) are closed the moment they start, with a pop-up saying what was blocked. Ending early takes a 3-second hold, and restarting Aurolo or the PC doesn't end it.
 - **Notes:** a scratchpad and a to-do list, saved automatically.
 - **Plan:** countdowns ("Exam 12 Dec", "Trip in 10 days") and a weekly timetable ("Mon 9-10 Maths", "weekdays 2pm-3pm Lab"). When nothing is playing, the pill shows your next class or countdown.
 - **Weather:** now, hourly and 5-day forecast with rain chance, feels-like, humidity, wind, sunrise/sunset and air quality, from Open-Meteo with no account. Type your city in the tab the first time.

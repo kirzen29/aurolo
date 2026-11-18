@@ -10,6 +10,7 @@ mod netctl;
 mod platform;
 mod services;
 mod desktop;
+mod focuslock;
 mod shell;
 mod state;
 mod ui;

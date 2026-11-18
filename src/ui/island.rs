@@ -240,6 +240,8 @@ impl Island {
         let pal = media.palette();
         let was_focus = self.launcher || self.rem_edit || self.extras.editing();
 
+        self.extras.tick(shared);
+
         // ---- reminders coming due
         let now_unix = platform::unix_now();
         let mut fired = false;
