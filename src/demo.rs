@@ -34,6 +34,10 @@ pub fn want_fullscreen() -> bool {
 pub fn apply_cfg(cfg: &mut Config) {
     cfg.island = true;
     cfg.lyrics_widget = true;
+    // a demo runs next to the real Aurolo: leave the user's PC setup alone
+    cfg.autostart = false;
+    cfg.dock_reserve = false;
+    cfg.hide_windows_taskbar = false;
     cfg.dock = std::env::var("AUROLO_DEMO_DOCK").is_ok();
     cfg.widget_pos = None;
     cfg.widget_lyrics_only = std::env::var("AUROLO_DEMO_LAYOUT").map(|v| v == "lyrics").unwrap_or(false);

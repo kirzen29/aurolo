@@ -17,12 +17,15 @@ mod ui;
 
 use winit::event_loop::EventLoop;
 
-fn single_instance() -> bool {
+/// Only one Aurolo runs at a time. Demo mode (screenshots / testing) has its own slot,
+/// so it can run next to the real one instead of closing it.
+fn single_instance(demo: bool) -> bool {
     use windows::core::HSTRING;
     use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
     use windows::Win32::System::Threading::CreateMutexW;
+    let name = if demo { "Local\\AuroloDemo" } else { "Local\\AuroloDesktopIslandLyrics" };
     unsafe {
-        let h = CreateMutexW(None, true, &HSTRING::from("Local\\AuroloDesktopIslandLyrics"));
+        let h = CreateMutexW(None, true, &HSTRING::from(name));
         if h.is_err() {
             return true;
         }
@@ -38,12 +41,12 @@ fn main() {
         desktop::set_windows_taskbar_visible(true);
     }));
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
-    if !single_instance() {
+    let demo = demo::init();
+    if !single_instance(demo) {
         gfx::log(&format!("start skipped: Aurolo is already running ({exe})"));
         return;
     }
-    gfx::log(&format!("start: Aurolo {} ({exe})", env!("CARGO_PKG_VERSION")));
-    let demo = demo::init();
+    gfx::log(&format!("start{}: Aurolo {} ({exe})", if demo { " (demo)" } else { "" }, env!("CARGO_PKG_VERSION")));
     let mut cfg = config::Config::load();
     if demo {
         demo::apply_cfg(&mut cfg);
