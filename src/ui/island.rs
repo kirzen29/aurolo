@@ -132,6 +132,8 @@ pub struct Island {
     extras: crate::ui::island_tabs::Extras,
     /// Glass colour, eased toward the wallpaper's colour behind the island.
     tint: Rgba,
+    /// 1 while music plays in the small pill: clearer glass that melts into the wallpaper.
+    blend: f32,
 }
 
 impl Island {
@@ -178,6 +180,7 @@ impl Island {
             debug_hold: false,
             extras: crate::ui::island_tabs::Extras::new(),
             tint: DEFAULT_TINT,
+            blend: 0.0,
         }
         .with_debug_tab()
     }
@@ -371,7 +374,9 @@ impl Island {
         f.scene.halo_shape(Shape::rect(x, y, w, h, r, with_a(glow_c, if media.playing { 0.06 + audio.pulse() * 0.08 } else { 0.0 })));
         // always glass: see-through in the background, mostly opaque when pulled open
         let glass = true;
-        draw_pill_body(f, x, y, w, h, r, glass, smooth(110.0, 380.0, h), self.tint);
+        let blend_to = if media.playing && self.mode == Mode::Compact { 1.0 } else { 0.0 };
+        self.blend = approach(self.blend, blend_to, 4.0, f.dt);
+        draw_pill_body(f, x, y, w, h, r, glass, smooth(110.0, 380.0, h), self.tint, self.blend);
         let content_a = smooth(0.05, 0.22, t - self.mode_since)
             * smooth(0.6, 0.95, (w / tw).min(tw / w) * (h / th).min(th / h));
         f.scene.layer();
@@ -429,7 +434,7 @@ impl Island {
             let d = 34.0 * bs;
             let bx = x + w + 7.0;
             let by = y + (h - d) / 2.0;
-            draw_pill_body(f, bx, by, d, d, d / 2.0, glass, 0.0, self.tint);
+            draw_pill_body(f, bx, by, d, d, d / 2.0, glass, 0.0, self.tint, self.blend);
             let (cx, cy) = (bx + d / 2.0, by + d / 2.0);
             if let Some(rem) = self.timer_remaining() {
                 let p = rem / self.timer_total.max(1.0);
@@ -1630,7 +1635,7 @@ const DEFAULT_TINT: Rgba = [0.07, 0.07, 0.10, 1.0];
 
 /// The pill itself: solid black, or translucent glass with a sheen and bright rim.
 #[allow(clippy::too_many_arguments)]
-fn draw_pill_body(f: &mut Frame, x: f32, y: f32, w: f32, h: f32, r: f32, glass: bool, dense: f32, tint: Rgba) {
+fn draw_pill_body(f: &mut Frame, x: f32, y: f32, w: f32, h: f32, r: f32, glass: bool, dense: f32, tint: Rgba, blend: f32) {
     if !glass {
         f.scene.shape(Shape::rect(x, y + 3.0, w, h, r, [0.0, 0.0, 0.0, 0.35]).soft(14.0));
         f.scene.shape(Shape::rect(x, y, w, h, r, [0.0, 0.0, 0.0, 1.0]));
@@ -1640,16 +1645,21 @@ fn draw_pill_body(f: &mut Frame, x: f32, y: f32, w: f32, h: f32, r: f32, glass: 
         return;
     }
     // soft drop shadow so the glass lifts off the desktop
-    f.scene.shape(Shape::rect(x, y + 4.0, w, h, r, [0.0, 0.0, 0.0, 0.22]).soft(18.0));
-    // tinted translucent body (a little denser when expanded, for readability)
-    // glassy while just displaying; denser (more opaque) as it opens up for use
-    let body = lerp(0.42, 0.94, dense);
-    // tinted with the wallpaper colour behind the island, so it blends into the desktop
-    f.scene.shape(Shape::rect(x, y, w, h, r, with_a(tint, body)));
+    let blend = blend * (1.0 - dense);
+    f.scene.shape(Shape::rect(x, y + 4.0, w, h, r, [0.0, 0.0, 0.0, 0.22 * (1.0 - 0.6 * blend)]).soft(18.0));
+    // tinted with the wallpaper colour behind the island, so it blends into the desktop:
+    // clear and in the wallpaper's own colour while music plays in the small pill,
+    // darker and denser as it opens up, so text stays readable
+    let body = lerp(lerp(0.42, 0.26, blend), 0.94, dense);
+    let k = lerp(lerp(0.45, 1.0, blend), 0.35, dense);
+    f.scene.shape(Shape::rect(x, y, w, h, r, [tint[0] * k, tint[1] * k, tint[2] * k, body]));
     // top sheen
-    f.scene.shape(Shape::rect(x, y, w, h, r, with_a(WHITE, 0.11)).grad(with_a(WHITE, 0.0), std::f32::consts::FRAC_PI_2 * 0.85));
+    f.scene.shape(
+        Shape::rect(x, y, w, h, r, with_a(WHITE, 0.11 * (1.0 - 0.5 * blend))).grad(with_a(WHITE, 0.0), std::f32::consts::FRAC_PI_2 * 0.85),
+    );
     // bright rim, strongest at the top
-    f.scene.shape(Shape::stroke(x, y, w, h, r, 1.1, with_a(WHITE, 0.34)).grad(with_a(WHITE, 0.07), std::f32::consts::FRAC_PI_2));
+    let rim = 1.0 - 0.45 * blend;
+    f.scene.shape(Shape::stroke(x, y, w, h, r, 1.1, with_a(WHITE, 0.34 * rim)).grad(with_a(WHITE, 0.07 * rim), std::f32::consts::FRAC_PI_2));
 }
 
 fn fmt_dur(secs: u64) -> String {

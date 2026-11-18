@@ -600,7 +600,7 @@ fn wall_tint(path: &std::path::Path) -> Option<crate::gfx::Rgba> {
     let mut lin = [sum[0] / n, sum[1] / n, sum[2] / n];
     // keep it a dark glass: cap brightness, keep the hue
     let lum = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
-    let max_lum = 0.03;
+    let max_lum = 0.10;
     if lum > max_lum {
         let k = max_lum / lum;
         lin.iter_mut().for_each(|v| *v *= k);
