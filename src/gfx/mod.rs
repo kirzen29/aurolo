@@ -572,8 +572,13 @@ impl Painter {
             return key;
         }
         let mut fs = gpu.fonts.borrow_mut();
-        let mut buf = Buffer::new(&mut fs, Metrics::new(t.size, t.size * t.line_height));
-        buf.set_size(t.max_w, None);
+        // The text layout engine can spin forever on a zero / negative / NaN wrap width or
+        // font size, which freezes every Aurolo window. Panels compute widths from their
+        // animated size, so mid-animation a width can briefly be tiny or negative: never
+        // pass such values through.
+        let (size, lh, max_w) = safe_layout(t.size, t.line_height, t.max_w);
+        let mut buf = Buffer::new(&mut fs, Metrics::new(size, size * lh));
+        buf.set_size(max_w, None);
         let fam = match t.family {
             Family::Ui => GFamily::Name("Segoe UI Variable Text"),
             Family::Display => GFamily::Name("Segoe UI Variable Display"),
@@ -885,4 +890,43 @@ pub fn log(s: &str) {
         );
     }
     eprintln!("{s}");
+}
+
+/// Font size, line height and wrap width that are safe to hand to the text layout
+/// engine: it loops forever on a zero (or negative) font size.
+fn safe_layout(size: f32, line_height: f32, max_w: Option<f32>) -> (f32, f32, Option<f32>) {
+    let size = if size.is_finite() { size.clamp(1.0, 1000.0) } else { 12.0 };
+    let lh = if line_height.is_finite() { line_height.clamp(0.5, 4.0) } else { 1.25 };
+    let max_w = max_w.map(|w| if w.is_finite() { w.max(size * 2.0) } else { size * 40.0 });
+    (size, lh, max_w)
+}
+
+#[cfg(test)]
+mod tests {
+    use glyphon::cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping};
+
+    /// Lay out text with the sanitised parameters on a helper thread; None = it hung.
+    fn layout(size: f32, max_w: Option<f32>) -> Option<std::time::Duration> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut fs = FontSystem::new();
+            let (size, lh, max_w) = super::safe_layout(size, 1.25, max_w);
+            let t = std::time::Instant::now();
+            let mut b = Buffer::new(&mut fs, Metrics::new(size, size * lh));
+            b.set_size(max_w, None);
+            b.set_text("Grand Theft Auto V", &Attrs::new(), Shaping::Advanced, None);
+            b.shape_until_scroll(&mut fs, false);
+            let _ = tx.send(t.elapsed());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(6)).ok()
+    }
+
+    /// Mid-animation panels can ask for zero / negative / NaN sizes and widths. A zero
+    /// font size used to freeze Aurolo; with safe_layout every case finishes.
+    #[test]
+    fn bad_text_sizes_never_hang() {
+        for (size, w) in [(0.0, None), (-4.0, None), (f32::NAN, None), (11.0, Some(0.0)), (11.0, Some(-30.0)), (11.0, Some(f32::NAN))] {
+            assert!(layout(size, w).is_some(), "hung on size {size} width {w:?}");
+        }
+    }
 }

@@ -1178,10 +1178,13 @@ impl Extras {
                         _ => {
                             let (c0, c1) = crate::ui::app_colors(&g.name);
                             let s = (tile_h - 48.0).min(46.0);
-                            let (ix, iy) = (tx + (tile_w - s) / 2.0, ty + 12.0 + (tile_h - 40.0 - s) / 2.0);
-                            f.scene.shape(Shape::rect(ix, iy, s, s, 12.0, with_a(c0, a)).grad(with_a(c1, a), 0.8));
-                            let ini = g.name.chars().next().unwrap_or('?').to_string();
-                            f.scene.text(Text::new(ini, ix + s / 2.0, iy + s * 0.18, s * 0.5, with_a(WHITE, a)).center().weight(700));
+                            // while the island animates open the tile is still tiny: skip the badge
+                            if s > 8.0 {
+                                let (ix, iy) = (tx + (tile_w - s) / 2.0, ty + 12.0 + (tile_h - 40.0 - s) / 2.0);
+                                f.scene.shape(Shape::rect(ix, iy, s, s, 12.0, with_a(c0, a)).grad(with_a(c1, a), 0.8));
+                                let ini = g.name.chars().next().unwrap_or('?').to_string();
+                                f.scene.text(Text::new(ini, ix + s / 2.0, iy + s * 0.18, s * 0.5, with_a(WHITE, a)).center().weight(700));
+                            }
                         }
                     }
                     let nt = f.fit(Text::new(&g.name, tx + tile_w / 2.0, ty + tile_h - 22.0, 11.5, with_a(WHITE, 0.92 * a)).center().weight(600), tile_w - 10.0);

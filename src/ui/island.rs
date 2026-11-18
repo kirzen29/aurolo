@@ -1314,7 +1314,7 @@ impl Island {
             f.scene.text(Text::new(format!("{:.0}°", wt.temp), r[0] + cw - 14.0, y + 82.0, 18.0, with_a(WHITE, a)).right().weight(600));
             f.scene.text(Text::new(format!("H{:.0}° L{:.0}°", wt.hi, wt.lo), r[0] + cw - 14.0, y + 104.0, 10.5, with_a(WHITE, 0.5 * a)).right());
         } else if cfg.weather_city.is_empty() {
-            f.scene.text(Text::new("set weather_city", r[0] + cw - 14.0, y + 70.0, 10.5, with_a(WHITE, 0.35 * a)).right());
+            f.scene.text(Text::new("set city in Weather", r[0] + cw - 14.0, y + 70.0, 10.5, with_a(WHITE, 0.35 * a)).right());
         }
         let mut ey = y + 126.0;
         if misc.events.is_empty() {
