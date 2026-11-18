@@ -103,9 +103,54 @@ pub fn set_autostart(on: bool) {
                 let v = wide(&format!("\"{}\"", exe.display()));
                 let bytes = std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 2);
                 let _ = RegSetValueExW(key, PCWSTR(name.as_ptr()), Some(0), REG_SZ, Some(bytes));
+                // a Startup-folder shortcut as a second route (only one copy ever runs)
+                crate::desktop::set_startup_shortcut(Some(&exe));
             }
         } else {
             let _ = RegDeleteValueW(key, PCWSTR(name.as_ptr()));
+            crate::desktop::set_startup_shortcut(None);
+        }
+        let _ = RegCloseKey(key);
+        // Recent Windows builds skip startup entries that have no "enabled" mark in the
+        // startup-approval list (what Task Manager's Startup tab edits). Add one, but never
+        // override the user turning Aurolo off there.
+        approve_startup("Run", "Aurolo", on);
+        approve_startup("StartupFolder", "Aurolo.lnk", on);
+    }
+}
+
+/// Mark a startup entry as enabled in Explorer's StartupApproved list (if it has no mark
+/// yet), or drop the mark when autostart is turned off.
+fn approve_startup(list: &str, name: &str, on: bool) {
+    let path = wide(&format!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\{list}"));
+    let n = wide(name);
+    unsafe {
+        let mut key = HKEY::default();
+        if RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(path.as_ptr()),
+            Some(0),
+            PCWSTR::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_QUERY_VALUE | KEY_SET_VALUE,
+            None,
+            &mut key,
+            None,
+        )
+        .is_err()
+        {
+            return;
+        }
+        if on {
+            let mut size = 0u32;
+            let exists = RegQueryValueExW(key, PCWSTR(n.as_ptr()), None, None, None, Some(&mut size)).is_ok();
+            if !exists {
+                // 02 = enabled (03 would be "disabled"), then an empty timestamp
+                let v: [u8; 12] = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                let _ = RegSetValueExW(key, PCWSTR(n.as_ptr()), Some(0), REG_BINARY, Some(&v));
+            }
+        } else {
+            let _ = RegDeleteValueW(key, PCWSTR(n.as_ptr()));
         }
         let _ = RegCloseKey(key);
     }

@@ -397,6 +397,28 @@ pub fn set_brightness(v: f32) {
         .spawn();
 }
 
+/// Create (Some(exe)) or remove (None) the "Aurolo" shortcut in the user's Startup folder.
+pub fn set_startup_shortcut(exe: Option<&std::path::Path>) {
+    let Some(appdata) = std::env::var_os("APPDATA") else { return };
+    let lnk = std::path::PathBuf::from(appdata).join("Microsoft\\Windows\\Start Menu\\Programs\\Startup\\Aurolo.lnk");
+    let Some(exe) = exe else {
+        let _ = std::fs::remove_file(&lnk);
+        return;
+    };
+    com_init();
+    unsafe {
+        let Ok(link) = CoCreateInstance::<_, IShellLinkW>(&ShellLink, None, CLSCTX_INPROC_SERVER) else { return };
+        let _ = link.SetPath(&HSTRING::from(exe.to_string_lossy().as_ref()));
+        if let Some(dir) = exe.parent() {
+            let _ = link.SetWorkingDirectory(&HSTRING::from(dir.to_string_lossy().as_ref()));
+        }
+        let _ = link.SetDescription(&HSTRING::from("Aurolo"));
+        if let Ok(pf) = link.cast::<IPersistFile>() {
+            let _ = pf.Save(&HSTRING::from(lnk.to_string_lossy().as_ref()), true);
+        }
+    }
+}
+
 /// Open the Start menu (asks the taskbar, no simulated key presses).
 pub fn open_start() {
     unsafe {
