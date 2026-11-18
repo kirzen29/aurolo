@@ -69,6 +69,8 @@ pub enum Key {
     Tab,
     BracketL,
     BracketR,
+    Plus,
+    Minus,
 }
 
 #[derive(Default)]

@@ -586,8 +586,8 @@ impl App {
             fstyles.push((b, s));
         }
         let sync = Submenu::new("Lyrics sync", true);
-        let earlier = MenuItem::new("Show lyrics earlier (−0.25s)", true, None);
-        let later = MenuItem::new("Show lyrics later (+0.25s)", true, None);
+        let earlier = MenuItem::new("Show lyrics earlier (+0.25s)", true, None);
+        let later = MenuItem::new("Show lyrics later (−0.25s)", true, None);
         let reset = MenuItem::new("Reset", true, None);
         let _ = sync.append_items(&[&earlier, &later, &reset]);
         let autostart = CheckMenuItem::new("Start with Windows", true, self.cfg.autostart, None);
@@ -727,9 +727,9 @@ impl App {
             } else if id == *m.fullscreen.id() {
                 self.open_fullscreen(el);
             } else if id == *m.earlier.id() {
-                self.set_offset(-0.25, false);
-            } else if id == *m.later.id() {
                 self.set_offset(0.25, false);
+            } else if id == *m.later.id() {
+                self.set_offset(-0.25, false);
             } else if id == *m.reset.id() {
                 self.set_offset(0.0, true);
             } else if id == *m.autostart.id() {
@@ -1108,6 +1108,8 @@ impl ApplicationHandler for App {
                     WKey::Named(NamedKey::Space) => Some(Key::Space),
                     WKey::Character(c) if c == "[" => Some(Key::BracketL),
                     WKey::Character(c) if c == "]" => Some(Key::BracketR),
+                    WKey::Character(c) if c == "+" || c == "=" => Some(Key::Plus),
+                    WKey::Character(c) if c == "-" || c == "_" => Some(Key::Minus),
                     _ => None,
                 };
                 if let Some(k) = k {

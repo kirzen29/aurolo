@@ -161,13 +161,22 @@ impl Fullscreen {
         if input.key(Key::Space) {
             shared.media_cmd(MediaCmd::PlayPause);
         }
-        if input.key(Key::BracketL) {
-            action = FsAction::Offset(-0.25);
-            self.toast = Some(("Lyrics earlier".into(), f.t));
+        // ---- lyrics sync: + pushes the lyrics ahead, − holds them back
+        let offset = *shared.lyrics_offset.read();
+        let mut nudge = 0.0;
+        if input.key(Key::Plus) || input.key(Key::BracketR) {
+            nudge += SYNC_STEP;
         }
-        if input.key(Key::BracketR) {
-            action = FsAction::Offset(0.25);
-            self.toast = Some(("Lyrics later".into(), f.t));
+        if input.key(Key::Minus) || input.key(Key::BracketL) {
+            nudge -= SYNC_STEP;
+        }
+
+        if nudge != 0.0 {
+            // snap to the step grid so repeated presses read cleanly (+0.1, +0.2 …)
+            let target = ((offset + nudge) / SYNC_STEP).round() * SYNC_STEP;
+            action = FsAction::Offset(target - offset);
+            let hint = if target > 1e-6 { "  ·  lyrics ahead" } else if target < -1e-6 { "  ·  lyrics behind" } else { "" };
+            self.toast = Some((format!("{}{hint}", sync_label(target)), f.t));
         }
 
         // ---- track info, bottom-left (quiet)
@@ -235,7 +244,7 @@ impl Fullscreen {
                 action = FsAction::Close;
             }
             f.scene.text(
-                Text::new("Scroll to change style  ·  Esc to close", w - 40.0, h - 30.0, 11.0, with_a(WHITE, 0.32 * v)).right(),
+                Text::new("Scroll to change style  ·  + / − to sync  ·  Esc to close",w - 40.0, h - 30.0, 11.0, with_a(WHITE, 0.32 * v)).right(),
             );
         }
         if let Some((msg, t0)) = &self.toast {
@@ -251,6 +260,17 @@ impl Fullscreen {
             }
         }
         action
+    }
+}
+
+/// One press of + / − moves the lyrics by this many seconds.
+const SYNC_STEP: f64 = 0.1;
+
+fn sync_label(offset: f64) -> String {
+    if offset.abs() < 0.05 {
+        "Sync 0.0s".into()
+    } else {
+        format!("Sync {:+.1}s", offset)
     }
 }
 
