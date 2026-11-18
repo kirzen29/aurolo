@@ -57,6 +57,7 @@ fn main() {
     services::media::spawn(shared.clone(), lyrics_tx);
     services::audio::spawn(shared.clone());
     services::sysmon::spawn(shared.clone(), cfg.lhm_url.clone());
+    desktop::spawn_wall_tint(shared.clone());
     if demo {
         // sample data instead of the user's notifications, Wi-Fi, app usage, clipboard
         demo::seed(&shared);

@@ -550,6 +550,65 @@ pub fn desktop_window_id() -> isize {
 }
 
 /// Small thumbnail (longest side `max`) of an image file, as RGBA.
+/// Keep `shared.wall_tint` in step with the desktop wallpaper: every couple of seconds,
+/// if the wallpaper (path or file) changed, sample the colour where the island sits.
+pub fn spawn_wall_tint(shared: std::sync::Arc<crate::state::Shared>) {
+    std::thread::spawn(move || {
+        let mut last: Option<(String, std::time::SystemTime)> = None;
+        loop {
+            let path = current_wallpaper();
+            let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH);
+            let key = (path.clone(), mtime);
+            if last.as_ref() != Some(&key) {
+                last = Some(key);
+                let tint = if path.is_empty() { None } else { wall_tint(std::path::Path::new(&path)) };
+                crate::gfx::log(&format!("island tint from wallpaper {path}: {tint:?}"));
+                *shared.wall_tint.write() = tint;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    });
+}
+
+/// Average colour of the wallpaper behind the island (top centre of the screen, with the
+/// image cropped to fill the screen), darkened so white text on it stays readable.
+fn wall_tint(path: &std::path::Path) -> Option<crate::gfx::Rgba> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+    let img = image::open(path).ok()?.thumbnail(480, 480).to_rgb8();
+    let (iw, ih) = (img.width() as f32, img.height() as f32);
+    let (sw, sh) = unsafe { (GetSystemMetrics(SM_CXSCREEN) as f32, GetSystemMetrics(SM_CYSCREEN) as f32) };
+    let screen_aspect = if sw > 0.0 && sh > 0.0 { sw / sh } else { 16.0 / 9.0 };
+    // "fill": the image covers the screen, cropped evenly on the long side
+    let (cw, ch) = if iw / ih > screen_aspect { (ih * screen_aspect, ih) } else { (iw, iw / screen_aspect) };
+    let (ox, oy) = ((iw - cw) / 2.0, (ih - ch) / 2.0);
+    let (x0, x1) = ((ox + cw * 0.36) as u32, (ox + cw * 0.64) as u32);
+    let (y0, y1) = (oy as u32, (oy + ch * 0.10).max(oy + 2.0) as u32);
+    let (mut sum, mut n) = ([0f64; 3], 0f64);
+    for y in y0..y1.min(img.height()) {
+        for x in x0..x1.min(img.width()) {
+            let p = img.get_pixel(x, y).0;
+            for c in 0..3 {
+                // average in linear light so bright specks don't dominate
+                sum[c] += (p[c] as f64 / 255.0).powf(2.2);
+            }
+            n += 1.0;
+        }
+    }
+    if n == 0.0 {
+        return None;
+    }
+    let mut lin = [sum[0] / n, sum[1] / n, sum[2] / n];
+    // keep it a dark glass: cap brightness, keep the hue
+    let lum = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+    let max_lum = 0.03;
+    if lum > max_lum {
+        let k = max_lum / lum;
+        lin.iter_mut().for_each(|v| *v *= k);
+    }
+    let g = |v: f64| (v.min(1.0).powf(1.0 / 2.2)) as f32;
+    Some([g(lin[0]), g(lin[1]), g(lin[2]), 1.0])
+}
+
 pub fn thumbnail(path: &std::path::Path, max: u32) -> Option<(u32, u32, Vec<u8>)> {
     let img = image::open(path).ok()?;
     let t = img.thumbnail(max, max).to_rgba8();

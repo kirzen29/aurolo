@@ -130,6 +130,8 @@ pub struct Island {
     debug_hold: bool,
     /// Game, Notes, Plan and Weather tabs.
     extras: crate::ui::island_tabs::Extras,
+    /// Glass colour, eased toward the wallpaper's colour behind the island.
+    tint: Rgba,
 }
 
 impl Island {
@@ -175,6 +177,7 @@ impl Island {
             power_confirm: None,
             debug_hold: false,
             extras: crate::ui::island_tabs::Extras::new(),
+            tint: DEFAULT_TINT,
         }
         .with_debug_tab()
     }
@@ -238,6 +241,10 @@ impl Island {
         let media = shared.media.read().clone();
         let audio = shared.audio.lock().clone();
         let pal = media.palette();
+        let target = shared.wall_tint.read().unwrap_or(DEFAULT_TINT);
+        for c in 0..3 {
+            self.tint[c] = approach(self.tint[c], target[c], 3.0, f.dt);
+        }
         let was_focus = self.launcher || self.rem_edit || self.extras.editing();
 
         self.extras.tick(shared);
@@ -361,7 +368,7 @@ impl Island {
         f.scene.halo_shape(Shape::rect(x, y, w, h, r, with_a(pal.primary, if media.playing { 0.10 + audio.pulse() * 0.12 } else { 0.0 })));
         // always glass: see-through in the background, mostly opaque when pulled open
         let glass = true;
-        draw_pill_body(f, x, y, w, h, r, glass, smooth(110.0, 380.0, h), &pal);
+        draw_pill_body(f, x, y, w, h, r, glass, smooth(110.0, 380.0, h), self.tint);
         let content_a = smooth(0.05, 0.22, t - self.mode_since)
             * smooth(0.6, 0.95, (w / tw).min(tw / w) * (h / th).min(th / h));
         f.scene.layer();
@@ -419,7 +426,7 @@ impl Island {
             let d = 34.0 * bs;
             let bx = x + w + 7.0;
             let by = y + (h - d) / 2.0;
-            draw_pill_body(f, bx, by, d, d, d / 2.0, glass, 0.0, &pal);
+            draw_pill_body(f, bx, by, d, d, d / 2.0, glass, 0.0, self.tint);
             let (cx, cy) = (bx + d / 2.0, by + d / 2.0);
             if let Some(rem) = self.timer_remaining() {
                 let p = rem / self.timer_total.max(1.0);
@@ -1615,9 +1622,12 @@ fn _unused(_: u64) -> String {
     fmt_bytes(0)
 }
 
+/// Glass colour when the wallpaper's colour isn't known (yet).
+const DEFAULT_TINT: Rgba = [0.07, 0.07, 0.10, 1.0];
+
 /// The pill itself: solid black, or translucent glass with a sheen and bright rim.
 #[allow(clippy::too_many_arguments)]
-fn draw_pill_body(f: &mut Frame, x: f32, y: f32, w: f32, h: f32, r: f32, glass: bool, dense: f32, pal: &Palette) {
+fn draw_pill_body(f: &mut Frame, x: f32, y: f32, w: f32, h: f32, r: f32, glass: bool, dense: f32, tint: Rgba) {
     if !glass {
         f.scene.shape(Shape::rect(x, y + 3.0, w, h, r, [0.0, 0.0, 0.0, 0.35]).soft(14.0));
         f.scene.shape(Shape::rect(x, y, w, h, r, [0.0, 0.0, 0.0, 1.0]));
@@ -1631,9 +1641,8 @@ fn draw_pill_body(f: &mut Frame, x: f32, y: f32, w: f32, h: f32, r: f32, glass: 
     // tinted translucent body (a little denser when expanded, for readability)
     // glassy while just displaying; denser (more opaque) as it opens up for use
     let body = lerp(0.42, 0.94, dense);
-    f.scene.shape(Shape::rect(x, y, w, h, r, [0.07, 0.07, 0.10, body]));
-    // faint album-colour wash
-    f.scene.shape(Shape::rect(x, y, w, h, r, with_a(pal.primary, 0.09)).grad(with_a(pal.secondary, 0.05), 0.5));
+    // tinted with the wallpaper colour behind the island, so it blends into the desktop
+    f.scene.shape(Shape::rect(x, y, w, h, r, with_a(tint, body)));
     // top sheen
     f.scene.shape(Shape::rect(x, y, w, h, r, with_a(WHITE, 0.11)).grad(with_a(WHITE, 0.0), std::f32::consts::FRAC_PI_2 * 0.85));
     // bright rim, strongest at the top

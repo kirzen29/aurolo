@@ -280,6 +280,8 @@ pub struct Shared {
     pub lyrics_offset: RwLock<f64>,
     /// City for the weather service; changed from the island's Weather tab.
     pub weather_city: RwLock<String>,
+    /// Colour of the wallpaper behind the island (darkened for legible text).
+    pub wall_tint: RwLock<Option<Rgba>>,
 }
 
 impl Shared {
@@ -294,6 +296,7 @@ impl Shared {
             media_tx: Mutex::new(None),
             lyrics_offset: RwLock::new(0.0),
             weather_city: RwLock::new(String::new()),
+            wall_tint: RwLock::new(None),
         })
     }
     pub fn hud(&self, h: Hud) {
