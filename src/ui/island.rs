@@ -365,7 +365,10 @@ impl Island {
 
         // ---- draw pill
         let rect = [x, y, w, h];
-        f.scene.halo_shape(Shape::rect(x, y, w, h, r, with_a(pal.primary, if media.playing { 0.10 + audio.pulse() * 0.12 } else { 0.0 })));
+        // soft beat glow, in the wallpaper's colour (brightened) so the pill blends in
+        let m = self.tint[0].max(self.tint[1]).max(self.tint[2]).max(0.01);
+        let glow_c = [self.tint[0] / m * 0.75, self.tint[1] / m * 0.75, self.tint[2] / m * 0.75, 1.0];
+        f.scene.halo_shape(Shape::rect(x, y, w, h, r, with_a(glow_c, if media.playing { 0.06 + audio.pulse() * 0.08 } else { 0.0 })));
         // always glass: see-through in the background, mostly opaque when pulled open
         let glass = true;
         draw_pill_body(f, x, y, w, h, r, glass, smooth(110.0, 380.0, h), self.tint);
