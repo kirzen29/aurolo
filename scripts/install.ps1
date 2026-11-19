@@ -33,6 +33,9 @@ $s.IconLocation = "$exe,0"
 $s.Description = 'Dynamic Island, synced lyrics, edge glow and taskbar dock'
 $s.Save()
 
-Start-Process $exe
+# Start it through Explorer, as if opened from the Start menu. Run from a packaged app's
+# terminal (e.g. the Claude desktop app), a directly started Aurolo would inherit that
+# app's private copy of %APPDATA% and use different settings than the sign-in start.
+Start-Process explorer.exe -ArgumentList "`"$exe`""
 Write-Host "Installed to $exe"
 Write-Host 'Search "Aurolo" in Windows to open it.'
